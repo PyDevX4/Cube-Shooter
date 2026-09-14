@@ -9,6 +9,7 @@ import atexit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # So the game finds cube_accounts.py next to it
 import cube_accounts
 import cube_online
+import cube_net
 import updater
 import sounds  # Sound effects: files dropped in the "sounds" folder play on their events
 from version import VERSION
@@ -615,9 +616,11 @@ def create_bubble_text(text, size, top_color, bottom_color, outline_color=(20, 2
 title_cube_surface = create_bubble_text("Cube", 150, (130, 230, 255), (20, 110, 230))
 title_shooter_surface = create_bubble_text("Shooter", 130, (255, 225, 90), (240, 90, 30))
 
+GREY_BUTTON = (95, 100, 110)  # Can't be used right now
+
 def draw_button(rect, color=BLUE):
     """Draw a white button with a dark outline. GREEN / DARK_RED / YELLOW tint it for owned, can't-afford and toggle states."""
-    fill = {GREEN: (170, 235, 170), DARK_RED: (240, 165, 165), YELLOW: (250, 238, 150)}.get(color, WHITE)
+    fill = {GREEN: (170, 235, 170), DARK_RED: (240, 165, 165), YELLOW: (250, 238, 150), GREY_BUTTON: (150, 154, 162)}.get(color, WHITE)
     pygame.draw.rect(screen, (15, 15, 15), rect.move(0, 4), border_radius=8)
     pygame.draw.rect(screen, fill, rect, border_radius=8)
     pygame.draw.rect(screen, (35, 35, 35), rect, 2, border_radius=8)
@@ -1593,6 +1596,8 @@ def log_out():
     if online_session is not None:
         cube_online.log_out(online_session)
         online_session = None
+    set_play_multiplayer(False)
+    net.close()
     login_remember = False
     current_account = None
     login_fields["username"], login_fields["password"] = save_data["last_user"], ""
@@ -4693,30 +4698,32 @@ GAME_MODES = [
     ("Tutorial", "Learn the controls step by step"),
 ]
 selected_mode = "Waves"
-PLAY_BUTTON = pygame.Rect(WIDTH // 2 - 160, HUB_VIEWPORT.y + 470, 320, 72)
+PLAY_CENTER_X = min(WIDTH // 2, WIDTH - 650)  # Leaves room for the lobby panel
+PLAY_BUTTON = pygame.Rect(PLAY_CENTER_X - 160, HUB_VIEWPORT.y + 470, 320, 72)
 
 def map_button_rects():
     width, gap = 170, 16
-    left = WIDTH // 2 - (len(MAP_NAMES) * width + (len(MAP_NAMES) - 1) * gap) // 2 + 40
+    left = PLAY_CENTER_X - (len(MAP_NAMES) * width + (len(MAP_NAMES) - 1) * gap) // 2
     return [(name, pygame.Rect(left + i * (width + gap), HUB_VIEWPORT.y + 385, width, 50))
             for i, name in enumerate(MAP_NAMES)]
 
 def mode_row_rects():
-    return [(name, pygame.Rect(WIDTH // 2 - 280, HUB_VIEWPORT.y + 20 + i * 62, 560, 54))
+    return [(name, pygame.Rect(PLAY_CENTER_X - 280, HUB_VIEWPORT.y + 20 + i * 62, 560, 54))
             for i, (name, _) in enumerate(GAME_MODES)]
 
 def draw_play_tab():
     for (name, rect), (_, description) in zip(mode_row_rects(), GAME_MODES):
         chosen = name == selected_mode
-        draw_button(rect, GREEN if chosen else BLUE)
+        solo_only = play_multiplayer and name in MULTIPLAYER_SOLO_MODES
+        draw_button(rect, GREY_BUTTON if solo_only else GREEN if chosen else BLUE)
         label = button_font.render(name, True, BLACK)
         screen.blit(label, label.get_rect(midleft=(rect.x + 22, rect.centery)))
-        if chosen:
-            tick = smaller_button_font.render("selected", True, (40, 90, 50))
+        if chosen or solo_only:
+            tick = smaller_button_font.render("solo only" if solo_only else "selected", True, (40, 90, 50) if chosen else (40, 40, 40))
             screen.blit(tick, tick.get_rect(midright=(rect.right - 18, rect.centery)))
     description = next(text for name, text in GAME_MODES if name == selected_mode)
     info = coin_font.render(description, True, (210, 215, 222))
-    screen.blit(info, info.get_rect(center=(WIDTH // 2, HUB_VIEWPORT.y + 350)))
+    screen.blit(info, info.get_rect(center=(PLAY_CENTER_X, HUB_VIEWPORT.y + 350)))
     # Map picker: works for every mode
     rects = map_button_rects()
     map_label = coin_font.render("Map:", True, WHITE)
@@ -4729,9 +4736,14 @@ def draw_play_tab():
         pygame.draw.rect(screen, (40, 40, 40), swatch_rect, 2, border_radius=4)
         text = smaller_button_font.render(name, True, BLACK)
         screen.blit(text, text.get_rect(midleft=(swatch_rect.right + 12, rect.centery)))
-    draw_button(PLAY_BUTTON, GREEN)
-    play_label = font.render("PLAY", True, BLACK)
+    waiting = multiplayer_guest() or (play_multiplayer and not net.lobby)
+    draw_button(PLAY_BUTTON, GREY_BUTTON if waiting else GREEN)
+    if multiplayer_guest():
+        play_label = small_button_font.render("Waiting for the host", True, BLACK)
+    else:
+        play_label = font.render("PLAY", True, BLACK)
     screen.blit(play_label, play_label.get_rect(center=PLAY_BUTTON.center))
+    draw_lobby_panel()
 
 sandbox_entry_coins = 0  # Your real coins when the Sandbox started; the Sandbox can't change them
 sandbox_snapshot = None  # Where every enemy was when the Sandbox last switched into play mode
@@ -4770,6 +4782,197 @@ def retry_sandbox():
     shooting_range_editor_mode = False
     shooting_range_play_mode = True
 
+# ---- Multiplayer lobby (right side of the Play tab) ----
+MULTIPLAYER_SOLO_MODES = ("Sandbox", "Tutorial")  # These stay single-player
+net = cube_net.Net()
+play_multiplayer = False      # The Solo / Multiplayer switch
+multiplayer_match = False     # In a match that started from a lobby
+join_code_text = ""
+join_code_focused = False
+net_sent_settings = None      # (mode, map) the host last told the lobby
+
+def lobby_panel():
+    left = PLAY_CENTER_X + 300
+    return pygame.Rect(left, HUB_VIEWPORT.y + 20, WIDTH - 30 - left, 470)
+
+def lobby_layout():
+    panel = lobby_panel()
+    half = (panel.width - 36) // 2
+    return {
+        "solo": pygame.Rect(panel.x + 12, panel.y + 12, half, 46),
+        "multi": pygame.Rect(panel.x + 24 + half, panel.y + 12, half, 46),
+        "code_box": pygame.Rect(panel.x + 12, panel.bottom - 60, panel.width - 136, 48),
+        "join": pygame.Rect(panel.right - 112, panel.bottom - 60, 100, 48),
+    }
+
+def set_play_multiplayer(on):
+    """Flip the Solo / Multiplayer switch: Multiplayer connects and opens a lobby with a code."""
+    global play_multiplayer, net_sent_settings, selected_mode, join_code_focused
+    play_multiplayer = on
+    join_code_focused = False
+    net_sent_settings = None
+    if not on:
+        if net.lobby:
+            net.leave_lobby()
+        return
+    if selected_mode in MULTIPLAYER_SOLO_MODES:
+        selected_mode = "Waves"
+    if online_session is None:
+        net.error = "Log in to an online account to play multiplayer"
+        return
+    if net.status == "offline":
+        try:
+            net.connect(online_session.token())
+        except (cube_online.OfflineError, cube_online.ServerError):
+            net.error = "Can't reach the server - check your internet"
+    elif net.status == "online" and not net.lobby:
+        net.create_lobby()
+
+def multiplayer_guest():
+    """In someone else's lobby: the host picks the mode and map and presses Play."""
+    return play_multiplayer and net.lobby is not None and not net.is_host
+
+def update_multiplayer():
+    """Every frame: handle what the server sent, keep the lobby's mode/map in sync."""
+    global selected_mode, selected_map, net_sent_settings, multiplayer_match
+    for msg in net.poll():
+        kind = msg.get("t")
+        if kind == "welcome" and play_multiplayer and not net.lobby:
+            net.create_lobby()  # Pressing Multiplayer opens your own lobby straight away
+        elif kind == "start":
+            selected_mode = msg.get("mode", selected_mode)
+            if msg.get("map") in MAP_NAMES:
+                selected_map = msg["map"]
+            start_selected_mode()
+            multiplayer_match = True
+        elif kind == "end":
+            multiplayer_match = False
+        elif kind == "disconnected":
+            multiplayer_match = False
+    lobby = net.lobby
+    if not play_multiplayer or lobby is None:
+        return
+    if net.is_host:
+        wanted = (selected_mode, selected_map)
+        if wanted != net_sent_settings and not lobby.get("started"):
+            net.send_settings(*wanted)
+            net_sent_settings = wanted
+    else:
+        if lobby.get("mode") in dict(GAME_MODES):
+            selected_mode = lobby["mode"]
+        if lobby.get("map") in MAP_NAMES:
+            selected_map = lobby["map"]
+
+def draw_lobby_panel():
+    panel = lobby_panel()
+    draw_panel(panel)
+    layout = lobby_layout()
+    for key, label, chosen in (("solo", "Solo", not play_multiplayer), ("multi", "Multiplayer", play_multiplayer)):
+        draw_button(layout[key], GREEN if chosen else BLUE)
+        text = small_button_font.render(label, True, BLACK)
+        screen.blit(text, text.get_rect(center=layout[key].center))
+    x, y = panel.x + 20, panel.y + 80
+    grey = (170, 175, 182)
+    if not play_multiplayer:
+        for i, line in enumerate(("Playing on your own.", "Switch to Multiplayer to get a", "code and play with up to 3 friends.")):
+            text = small_button_font.render(line, True, grey)
+            screen.blit(text, (x, y + i * 30))
+        return
+    if net.error and not net.lobby:
+        for i, line in enumerate(wrap_text(net.error, small_button_font, panel.width - 40)):
+            text = small_button_font.render(line, True, (255, 120, 110))
+            screen.blit(text, (x, y + i * 28))
+        hint = smaller_button_font.render("Click Multiplayer to try again", True, grey)
+        screen.blit(hint, (x, y + 90))
+    elif net.status != "online" or not net.lobby:
+        dots = "." * (1 + pygame.time.get_ticks() // 400 % 3)
+        text = small_button_font.render("Connecting" + dots, True, grey)
+        screen.blit(text, (x, y))
+    else:
+        lobby = net.lobby
+        label = small_button_font.render("Lobby code:", True, grey)
+        screen.blit(label, (x, y))
+        code = get_bubble_text(lobby["code"], 64, (255, 235, 120), (255, 170, 40), outline=6)
+        screen.blit(code, code.get_rect(midtop=(panel.centerx, y + 26)))
+        row_y = y + 112
+        heading = small_button_font.render(f"Players ({len(lobby['players'])}/4)", True, WHITE)
+        screen.blit(heading, (x, row_y))
+        for i in range(4):
+            row = pygame.Rect(x - 6, row_y + 32 + i * 40, panel.width - 28, 34)
+            pygame.draw.rect(screen, (34, 38, 48), row, border_radius=8)
+            if i < len(lobby["players"]):
+                name = lobby["players"][i]
+                you = " (you)" if name == net.name else ""
+                text = small_button_font.render(name + you, True, WHITE)
+                screen.blit(text, text.get_rect(midleft=(row.x + 12, row.centery)))
+                if name == lobby["host"]:
+                    tag = smaller_button_font.render("HOST", True, (255, 210, 80))
+                    screen.blit(tag, tag.get_rect(midright=(row.right - 12, row.centery)))
+            else:
+                text = smaller_button_font.render("empty", True, (110, 115, 125))
+                screen.blit(text, text.get_rect(midleft=(row.x + 12, row.centery)))
+        if net.error:
+            err = smaller_button_font.render(net.error, True, (255, 120, 110))
+            screen.blit(err, (x, layout["code_box"].y - 28))
+    if net.status == "online":
+        box = layout["code_box"]
+        pygame.draw.rect(screen, WHITE, box, border_radius=8)
+        pygame.draw.rect(screen, (255, 200, 60) if join_code_focused else (40, 40, 40), box, 3 if join_code_focused else 2, border_radius=8)
+        shown = join_code_text or ("" if join_code_focused else "Join a code")
+        text = (button_font if join_code_text else small_button_font).render(shown, True, BLACK if join_code_text else (140, 140, 140))
+        screen.blit(text, text.get_rect(midleft=(box.x + 12, box.centery)))
+        draw_button(layout["join"], GREEN if len(join_code_text) == 4 else BLUE)
+        join = small_button_font.render("Join", True, BLACK)
+        screen.blit(join, join.get_rect(center=layout["join"].center))
+
+def wrap_text(text, text_font, width):
+    lines, line = [], ""
+    for word in text.split():
+        trial = (line + " " + word).strip()
+        if text_font.size(trial)[0] > width and line:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    return lines + ([line] if line else [])
+
+def handle_lobby_click(pos):
+    """True if the click was on the lobby panel."""
+    global join_code_focused
+    layout = lobby_layout()
+    if layout["solo"].collidepoint(pos):
+        set_play_multiplayer(False)
+    elif layout["multi"].collidepoint(pos):
+        set_play_multiplayer(True)
+    elif play_multiplayer and net.status == "online" and layout["code_box"].collidepoint(pos):
+        join_code_focused = True
+    elif play_multiplayer and net.status == "online" and layout["join"].collidepoint(pos):
+        submit_join_code()
+    else:
+        join_code_focused = False
+        return lobby_panel().collidepoint(pos)
+    return True
+
+def submit_join_code():
+    global join_code_text, join_code_focused, net_sent_settings
+    if len(join_code_text) == 4:
+        net.join_lobby(join_code_text)
+        net_sent_settings = None
+        join_code_text, join_code_focused = "", False
+
+def handle_lobby_key(event):
+    """Typing a join code. True if the key was used."""
+    global join_code_text
+    if not (play_multiplayer and join_code_focused):
+        return False
+    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+        submit_join_code()
+    elif event.key == pygame.K_BACKSPACE:
+        join_code_text = join_code_text[:-1]
+    elif event.unicode.isdigit() and len(join_code_text) < 4:
+        join_code_text += event.unicode
+    return True
+
 def start_selected_mode():
     """Leave the hub and start whichever mode is selected."""
     global hub_open, start_screen, sandbox_snapshot
@@ -4791,16 +4994,24 @@ def start_selected_mode():
 
 def handle_play_tab_click(pos):
     global selected_mode, selected_map
+    if handle_lobby_click(pos):
+        return
+    if multiplayer_guest():
+        return  # The host chooses and starts
     for name, rect in map_button_rects():
         if rect.collidepoint(pos):
             selected_map = name
             return
     for name, rect in mode_row_rects():
         if rect.collidepoint(pos):
-            selected_mode = name
+            if not (play_multiplayer and name in MULTIPLAYER_SOLO_MODES):
+                selected_mode = name
             return
     if PLAY_BUTTON.collidepoint(pos):
-        start_selected_mode()
+        if play_multiplayer and net.lobby:
+            net.start_match()  # Everyone in the lobby starts together
+        elif not play_multiplayer:
+            start_selected_mode()
 
 # ---- Shop tab: four daily skins ----
 DAILY_VIEWPORT = pygame.Rect(0, 270, WIDTH, 300)
@@ -5032,6 +5243,8 @@ def handle_hub_event(event):
         elif hub_tab == "Locker":
             locker_scroll_target = max(0, min(max_card_scroll(len(locker_items()), LOCKER_VIEWPORT),
                                               locker_scroll_target - step))
+        return
+    if hub_tab == "Play" and event.type == pygame.KEYDOWN and handle_lobby_key(event):
         return
     if hub_tab == "Settings":
         handle_settings_content_event(event)  # Needs the raw event for its confirm boxes
@@ -5374,6 +5587,7 @@ if _remembered_account is not None:
 was_game_over = False
 while running:
     dt = clock.tick(60) / 1000
+    update_multiplayer()
     if game_over and not was_game_over:
         sounds.play("player_death")  # However the player died, the death sound plays once
     was_game_over = game_over
