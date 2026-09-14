@@ -7369,8 +7369,9 @@ while running:
                     wave_completion_reward = BOSSES[WAVES[wave - 1]["boss"]]["reward"] if finished_boss_wave else 15
                     sounds.play("boss_wave_complete" if finished_boss_wave else "wave_complete")
                     best_wave = max(best_wave, wave - 1)  # Saved to the account
-                    if finished_boss_wave and not multiplayer_match:
-                        checkpoint_wave = wave  # Beat a boss: this next wave is a checkpoint
+                    # Checkpoints: the wave after a boss, every 10 waves (11, 21, 31...), and every boss wave itself
+                    if (finished_boss_wave or wave % 10 == 1 or WAVES.get(wave, {}).get("boss")) and not multiplayer_match:
+                        checkpoint_wave = wave
                         if checkpoints_on:
                             console_message, console_message_timer = f"Checkpoint reached: wave {wave}", 3.0
                     wave_completion_timer = wave_completion_duration
