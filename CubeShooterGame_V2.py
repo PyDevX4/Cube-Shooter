@@ -1941,7 +1941,8 @@ def set_boss_health(kind, health):
         console_message = f"Boss health must be 1 to {boss['max_health']}"
         return False
     boss["health"] = health
-    boss["enraged"] = health <= BOSS_HEALTH // 2  # Red/Green call in their enemies from 50 down
+    boss["enraged"] = health <= BOSS_HEALTH // 2
+    boss["waves_done"] = [at for at in (75, 50, 25) if at > health]  # Red/Green: skipped-past spawns don't happen
     if kind == "teal":
         boss["events_done"] = [at for at in (175, 150, 125) if at > health]
         boss["shielded"] = False
@@ -3366,7 +3367,12 @@ BLUE_BOSS_SHIELD_AT = (75, 50, 25)
 BLUE_BOSS_SHIELD_MINIONS = [{"blue": 15}, {"blue": 10, "red": 30}, {"blue": 15, "red": 20, "green": 20}]  # At 75, 50, 25
 BLUE_BOSS_GUN_LENGTH = BOSS_RADIUS + 72
 # (turn speed, seconds between shots) for each stage: before 50, 50-25, below 25 (Gun V fire rate, slow turn)
-BLUE_BOSS_STAGES = [(math.radians(70), 0.8 / 1.5), (math.radians(125), 0.4 / 1.5), (math.radians(70), GUN_SHOT_DELAYS[5] / 1.5)]  # Below 25: Gun V-ish fire rate, spinning twice as fast as before
+BLUE_BOSS_STAGES = [(math.radians(70), 0.8 / 1.5), (math.radians(125), 0.4 / 1.5), (math.radians(70), 0.4 / 1.5)]  # (old turn speed, seconds between shots)
+BLUE_BOSS_AIM_TURN = math.radians(260)   # How fast his gun swings round to keep facing the player
+BLUE_BOSS_TRIPLE_SPREAD = 0.3            # Below 25 he fires 3 at once, like the Triple Bullet ability
+# Red and Green Boss: the enemies they call in at 75, 50 and 25 health (once each)
+RED_GREEN_BOSS_WAVES = {"red": {75: {"red": 25}, 50: {"red": 25}, 25: {"red": 25}},
+                        "green": {75: {"green": 25, "red": 15}, 50: {"green": 25, "red": 15}, 25: {"green": 30}}}
 BOSS_ORBS = {kind: create_orb_sprite(info["color"], BOSS_RADIUS, glow=18) for kind, info in BOSSES.items()}
 GREEN_DASH_EVERY = 10.0     # Seconds of walking between dashes
 GREEN_AIM_TIME = 2.0        # Shows its path this long before dashing
@@ -3453,8 +3459,11 @@ def update_boss(dt):
             if distance > 1:
                 boss["x"] += (tx - boss["x"]) / distance * info["speed"]
                 boss["y"] += (ty - boss["y"]) / distance * info["speed"]
-    if boss["kind"] in ("red", "green") and boss["enraged"] and not minions_alive(info["minions"]):
-        spawn_minions(info["minions"])  # At half health, and again whenever they've all been killed
+    if boss["kind"] in ("red", "green"):
+        for at in (75, 50, 25):  # Each one calls in its enemies once at 75, 50 and 25 (they don't come back)
+            if boss["health"] <= at and at not in boss.setdefault("waves_done", []):
+                boss["waves_done"].append(at)
+                spawn_minions(RED_GREEN_BOSS_WAVES[boss["kind"]][at])
     touching = math.hypot(px - boss["x"], py - boss["y"]) < BOSS_RADIUS + player_size / 2 - 6
     if boss["kind"] == "teal":
         touching = False  # He lands right on you on purpose - only his explosion hurts
@@ -4019,16 +4028,20 @@ def update_blue_boss(boss, dt):
     if boss["start"] > 0:
         boss["start"] -= dt
         return
-    turn, delay = BLUE_BOSS_STAGES[max(0, boss["shields_used"] - 1)]
-    boss["angle"] = (boss["angle"] + turn * dt) % (2 * math.pi)
+    _, delay = BLUE_BOSS_STAGES[max(0, boss["shields_used"] - 1)]
+    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+    aim = math.atan2(ty + player_size / 2 - boss["y"], tx + player_size / 2 - boss["x"])
+    boss["angle"] = turn_toward(boss["angle"], aim, BLUE_BOSS_AIM_TURN * dt) % (2 * math.pi)  # Always faces the player
     boss["shot_timer"] -= dt
     if boss["shot_timer"] <= 0:
         boss["shot_timer"] = delay
-        dx, dy = math.cos(boss["angle"]), math.sin(boss["angle"])
         size = bullet_size * BLUE_BOSS_SHOT_SCALE
-        blue_bullets.append({"x": boss["x"] + dx * BLUE_BOSS_GUN_LENGTH - size / 2,
-                             "y": boss["y"] + dy * BLUE_BOSS_GUN_LENGTH - size / 2,
-                             "dx": dx * blue_bullet_speed, "dy": dy * blue_bullet_speed, "scale": BLUE_BOSS_SHOT_SCALE})
+        spread = (-BLUE_BOSS_TRIPLE_SPREAD, 0.0, BLUE_BOSS_TRIPLE_SPREAD) if boss["shields_used"] >= 3 else (0.0,)
+        for offset in spread:  # Below 25: three shots at once, like the Triple Bullet ability
+            dx, dy = math.cos(boss["angle"] + offset), math.sin(boss["angle"] + offset)
+            blue_bullets.append({"x": boss["x"] + dx * BLUE_BOSS_GUN_LENGTH - size / 2,
+                                 "y": boss["y"] + dy * BLUE_BOSS_GUN_LENGTH - size / 2,
+                                 "dx": dx * blue_bullet_speed, "dy": dy * blue_bullet_speed, "scale": BLUE_BOSS_SHOT_SCALE})
         boss["muzzle"] = pygame.time.get_ticks() / 1000
 
 def update_green_boss(boss, dt, px, py):
