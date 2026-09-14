@@ -236,7 +236,10 @@ has_magnet_5 = False
 has_shield = False
 has_teleport = False
 has_freeze = False
-equipped_ability = None  # 'shield', 'teleport', or 'freeze'
+equipped_ability = None  # The ability right-click uses: whatever is in the selected slot
+ability_slots = [None, None, None]   # Up to 3 equipped abilities (keys 1, 2, 3)
+selected_ability_slot = 0
+ability_drag = None                  # Abilities tab: {"key", "from_slot"} while dragging one
 
 # Track if shield is active
 shield_active = False
@@ -1491,6 +1494,8 @@ def progress_state():
         "skin": main_game_skin,
         "upgrades": {flag: bool(g["main_game_" + flag]) for flag in UPGRADE_FLAGS},
         "equipped_ability": main_game_equipped_ability,
+        "ability_slots": list(ability_slots),
+        "ability_slot": selected_ability_slot,
         "best_wave": best_wave,
         "map": selected_map,
         "checkpoints": checkpoints_on,
@@ -1511,7 +1516,10 @@ def apply_progress(progress):
     for flag in UPGRADE_FLAGS:
         g[flag] = g["main_game_" + flag] = bool(upgrades.get(flag, False))
     ability = progress.get("equipped_ability")
-    g["equipped_ability"] = g["main_game_equipped_ability"] = ability if ability and g.get("has_" + ability) else None
+    slots = progress.get("ability_slots") or [ability, None, None]  # Older saves had one equipped ability
+    g["ability_slots"] = [s if s and g.get("has_" + s) else None for s in (list(slots) + [None, None, None])[:3]]
+    g["selected_ability_slot"] = int(progress.get("ability_slot", 0)) % 3
+    select_ability_slot(g["selected_ability_slot"])
     g["shot_delay"] = g["main_game_shot_delay"] = GUN_SHOT_DELAYS[gun_level()]
     g["best_wave"] = int(progress.get("best_wave", 0))
     g["selected_map"] = progress.get("map") if progress.get("map") in MAP_NAMES else "Grass"
@@ -2232,7 +2240,7 @@ def exit_to_main_menu():
         owned_skins = main_game_owned_skins.copy()
         for flag in UPGRADE_FLAGS:
             g[flag] = g["main_game_" + flag]
-        equipped_ability = main_game_equipped_ability
+        equipped_ability = ability_slots[selected_ability_slot]
         shot_delay = main_game_shot_delay
     elif in_storm_survival:
         in_storm_survival = False
@@ -2362,7 +2370,7 @@ def laser_reach(x, y, angle):
 
 def shield_stops_laser(start_x, start_y, angle, length):
     """If the player's shield is up and in the laser's path, how far along the laser it gets stopped (else None)."""
-    if not (has_shield and equipped_ability == 'shield' and shield_active):
+    if not (shield_active):
         return None
     px, py = player_x + player_size / 2, player_y + player_size / 2
     dx, dy = math.cos(angle), math.sin(angle)
@@ -2397,7 +2405,7 @@ def player_hit():
 def update_orange_enemies(dt):
     """Walk toward the player; once close, plant, wind up, and fire one long laser that grows until it hits
     the barrier and slowly swings after the player. It pulls the laser back in if the player gets far away."""
-    frozen = has_freeze and equipped_ability == 'freeze' and freeze_active
+    frozen = freeze_active
     half = player_size / 2
     lpx, lpy = player_x + half, player_y + half  # You (for getting hit)
     attack_range = BLOCK_ORANGE_RANGE if in_block_defence else ORANGE_ATTACK_RANGE
@@ -2585,7 +2593,7 @@ def update_violet_enemies(dt):
     """Violets walk at the nearest player like reds, tentacles swaying. Touch a tentacle (or the body) and it grabs
     you and drags you in; reaching the body kills you. Cutting off the tentacle that holds you lets you go."""
     global player_x, player_y, violet_grab
-    if has_freeze and equipped_ability == 'freeze' and freeze_active:
+    if freeze_active:
         return
     half = player_size / 2
     for enemy in violet_enemies:
@@ -2710,7 +2718,7 @@ def pink_pick_diagonal(enemy, target_x, target_y):
 
 def update_pink_enemies(dt):
     """Pinks dash along diagonals only, like the Green Boss's dash: a quick diagonal dash, a 0.3 s stop, then the next dash - zigzagging toward the player."""
-    if has_freeze and equipped_ability == 'freeze' and freeze_active:
+    if freeze_active:
         return
     for enemy in pink_enemies:
         enemy["trail"] = [(x, y, age + dt) for x, y, age in enemy["trail"] if age + dt < 0.2]
@@ -2774,7 +2782,7 @@ def new_teal_enemy(x, y):
 
 def update_teal_enemies(dt):
     """Hunt the player nearly invisible; once close, stop, flash faster and faster for 2 seconds, then explode."""
-    if has_freeze and equipped_ability == 'freeze' and freeze_active:
+    if freeze_active:
         return
     half = player_size / 2
     for enemy in teal_enemies[:]:
@@ -2870,7 +2878,7 @@ def draw_teal_enemies():
 def update_yellow_enemies(dt):
     """Walk toward the player spinning the orb. Close up, the orb swings round to face the player, charges for a
     second (turning red) and gets flung as a shot that curves a little toward the player. Then it grows back."""
-    if has_freeze and equipped_ability == 'freeze' and freeze_active:
+    if freeze_active:
         return
     half = player_size / 2
     for enemy in yellow_enemies:
@@ -3466,7 +3474,7 @@ def update_boss(dt):
     px, py = player_x + player_size / 2, player_y + player_size / 2
     target_x, target_y = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
     tx, ty = target_x + player_size / 2, target_y + player_size / 2
-    frozen = has_freeze and equipped_ability == 'freeze' and freeze_active
+    frozen = freeze_active
     boss["trail"] = [(x, y, age + dt) for x, y, age in boss["trail"] if age + dt < 0.35]
     if not frozen:
         if boss["kind"] == "green":
@@ -6074,45 +6082,143 @@ def handle_upgrades_tab_click(pos):
 ability_scroll = 0.0
 ability_scroll_target = 0.0
 
+ABILITY_VIEWPORT = pygame.Rect(0, HUB_VIEWPORT.y + 150, WIDTH, HUB_VIEWPORT.height - 150)  # Cards, under the slots
+
+def select_ability_slot(index):
+    """Keys 1/2/3: right-click now uses what's in that slot."""
+    global selected_ability_slot, equipped_ability, main_game_equipped_ability
+    selected_ability_slot = index
+    equipped_ability = ability_slots[index]
+    main_game_equipped_ability = equipped_ability
+
+def ability_slot_rects():
+    size, gap = 110, 30
+    left = WIDTH // 2 - (3 * size + 2 * gap) // 2
+    return [pygame.Rect(left + i * (size + gap), HUB_VIEWPORT.y + 22, size, size) for i in range(3)]
+
+def put_in_slot(key, index, from_slot=None):
+    """Put an ability in a slot. If it was in another slot, the two swap."""
+    if key in ability_slots and from_slot is None:
+        from_slot = ability_slots.index(key)
+    if from_slot is not None:
+        ability_slots[from_slot] = ability_slots[index]
+    ability_slots[index] = key
+    select_ability_slot(selected_ability_slot)
+
 def draw_abilities_tab():
     global ability_scroll
     ability_scroll += (ability_scroll_target - ability_scroll) * 0.25
-    screen.set_clip(HUB_VIEWPORT)
+    # The 3 slots
+    label = small_button_font.render("Equipped abilities - drag owned abilities in. In game: 1, 2, 3 to pick, right-click to use",
+                                     True, (200, 205, 212))
+    screen.blit(label, label.get_rect(midtop=(WIDTH // 2, ability_slot_rects()[0].bottom + 8)))
+    for i, rect in enumerate(ability_slot_rects()):
+        key = ability_slots[i]
+        pygame.draw.rect(screen, (30, 34, 44), rect, border_radius=16)
+        pygame.draw.rect(screen, (255, 215, 80) if i == selected_ability_slot else (90, 96, 110), rect, 3, border_radius=16)
+        number = coin_font.render(str(i + 1), True, (255, 222, 95))
+        screen.blit(number, (rect.x + 8, rect.y + 4))
+        if key and not (ability_drag and ability_drag.get("from_slot") == i):
+            screen.blit(ABILITY_ICONS[key], ABILITY_ICONS[key].get_rect(center=(rect.centerx, rect.centery - 8)))
+            name = smaller_button_font.render(next(n for k, n, _, _ in ABILITIES if k == key), True, WHITE)
+            screen.blit(name, name.get_rect(midbottom=(rect.centerx, rect.bottom - 6)))
+        else:
+            empty = smaller_button_font.render("empty", True, (110, 115, 125))
+            screen.blit(empty, empty.get_rect(center=rect.center))
+    # The cards
+    screen.set_clip(ABILITY_VIEWPORT)
     for i, (key, name, _, price) in enumerate(ABILITIES):
-        card, button = card_rects(i, HUB_VIEWPORT, ability_scroll)
-        if card.bottom < HUB_VIEWPORT.top or card.top > HUB_VIEWPORT.bottom:
+        card, button = card_rects(i, ABILITY_VIEWPORT, ability_scroll)
+        if card.bottom < ABILITY_VIEWPORT.top or card.top > ABILITY_VIEWPORT.bottom:
             continue
         owned = globals()["has_" + key]
-        if equipped_ability == key:
-            button_color, label = GREEN, "Equipped"
+        if key in ability_slots:
+            button_color, label = GREEN, f"In slot {ability_slots.index(key) + 1}"
         elif owned:
-            button_color, label = BLUE, "Equip"
+            button_color, label = BLUE, "Drag to a slot"
         elif main_game_coins >= price:
             button_color, label = BLUE, f"Buy - {price}"
         else:
             button_color, label = DARK_RED, f"Need {price}"
         draw_shop_card(card, button, "ABILITY", ABILITY_ICONS[key], name, button_color, label)
     screen.set_clip(None)
-    draw_scrollbar(HUB_VIEWPORT, ability_scroll, max_card_scroll(len(ABILITIES), HUB_VIEWPORT))
+    draw_scrollbar(ABILITY_VIEWPORT, ability_scroll, max_card_scroll(len(ABILITIES), ABILITY_VIEWPORT))
+    if ability_drag:  # The ability being dragged follows the mouse
+        mx, my = pygame.mouse.get_pos()
+        icon = ABILITY_ICONS[ability_drag["key"]]
+        screen.blit(icon, icon.get_rect(center=(mx, my)))
 
 def handle_abilities_tab_click(pos):
-    global main_game_coins, coin_count, equipped_ability, console_message, console_message_timer
-    if not HUB_VIEWPORT.collidepoint(pos):
+    """Buy an ability, or pick up an owned one (from its card or a slot) to drag it."""
+    global main_game_coins, coin_count, console_message, console_message_timer, ability_drag
+    for i, rect in enumerate(ability_slot_rects()):
+        if rect.collidepoint(pos) and ability_slots[i]:
+            ability_drag = {"key": ability_slots[i], "from_slot": i, "start": pos}
+            return
+    if not ABILITY_VIEWPORT.collidepoint(pos):
         return
     for i, (key, name, _, price) in enumerate(ABILITIES):
-        _, button = card_rects(i, HUB_VIEWPORT, ability_scroll)
-        if not button.collidepoint(pos):
+        card, button = card_rects(i, ABILITY_VIEWPORT, ability_scroll)
+        if not card.collidepoint(pos):
             continue
         if globals()["has_" + key]:
-            equipped_ability = key  # Already bought, so this equips it
+            ability_drag = {"key": key, "from_slot": None, "start": pos}
             return
-        if main_game_coins >= price:
+        if button.collidepoint(pos) and main_game_coins >= price:
             main_game_coins -= price
             coin_count = main_game_coins
             globals()["has_" + key] = True
-            equipped_ability = key
+            if None in ability_slots:
+                put_in_slot(key, ability_slots.index(None))  # A new ability goes into the first empty slot
             console_message, console_message_timer = f"Bought {name}!", 2.5
         return
+
+def handle_abilities_drop(pos):
+    """Let go of a dragged ability: into a slot, or (dragged out of a slot onto nothing) take it out."""
+    global ability_drag
+    drag, ability_drag = ability_drag, None
+    if drag is None:
+        return
+    for i, rect in enumerate(ability_slot_rects()):
+        if rect.collidepoint(pos):
+            put_in_slot(drag["key"], i, drag["from_slot"])
+            return
+    moved = math.hypot(pos[0] - drag["start"][0], pos[1] - drag["start"][1]) > 10
+    if drag["from_slot"] is not None and moved:
+        ability_slots[drag["from_slot"]] = None  # Dragged out of its slot
+        select_ability_slot(selected_ability_slot)
+    elif drag["from_slot"] is None and not moved and drag["key"] not in ability_slots and None in ability_slots:
+        put_in_slot(drag["key"], ability_slots.index(None))  # Just clicked an owned card: first empty slot
+
+def draw_ability_slots_hud():
+    """In game: the 3 slots at the bottom, the selected one highlighted, with each ability's cooldown."""
+    if not any(ability_slots):
+        return
+    size, gap = 58, 12
+    left = WIDTH // 2 - (3 * size + 2 * gap) // 2
+    top = HEIGHT - size - 14
+    g = globals()
+    for i in range(3):
+        rect = pygame.Rect(left + i * (size + gap), top, size, size)
+        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(panel, (22, 25, 32, 210), panel.get_rect(), border_radius=12)
+        screen.blit(panel, rect.topleft)
+        key = ability_slots[i]
+        if key:
+            icon = pygame.transform.smoothscale(ABILITY_ICONS[key], (40, 40))
+            screen.blit(icon, icon.get_rect(center=rect.center))
+            cooldown = g.get(key + "_cooldown", 0.0)
+            full = g.get(key + "_cooldown_time", 1.0) or 1.0
+            if cooldown > 0 and not g.get(key + "_active"):
+                shade = pygame.Surface((rect.width, int(rect.height * min(1.0, cooldown / full))), pygame.SRCALPHA)
+                shade.fill((0, 0, 0, 150))
+                screen.blit(shade, (rect.x, rect.bottom - shade.get_height()))
+            if g.get(key + "_active"):
+                pygame.draw.rect(screen, (120, 255, 150), rect, 3, border_radius=12)
+        selected = i == selected_ability_slot
+        pygame.draw.rect(screen, (255, 215, 80) if selected else (90, 96, 110), rect, 3 if selected else 2, border_radius=12)
+        number = smaller_button_font.render(str(i + 1), True, (255, 222, 95) if selected else (170, 175, 182))
+        screen.blit(number, (rect.x + 5, rect.y + 2))
 
 # ---- Locker tab: what you own, and equipping it ----
 locker_scroll = 0.0
@@ -6182,7 +6288,7 @@ def handle_hub_event(event):
             shop_upgrade_scroll_target = max(0, min(max_card_scroll(len(SHOP_UPGRADES), SHOP_UPGRADE_VIEWPORT),
                                                     shop_upgrade_scroll_target - step))
         elif hub_tab == "Abilities":
-            ability_scroll_target = max(0, min(max_card_scroll(len(ABILITIES), HUB_VIEWPORT),
+            ability_scroll_target = max(0, min(max_card_scroll(len(ABILITIES), ABILITY_VIEWPORT),
                                                ability_scroll_target - step))
         elif hub_tab == "Locker":
             locker_scroll_target = max(0, min(max_card_scroll(len(locker_items()), LOCKER_VIEWPORT),
@@ -6192,9 +6298,12 @@ def handle_hub_event(event):
         return
     if hub_tab == "Settings":
         handle_settings_content_event(event)  # Needs the raw event for its confirm boxes
+    if hub_tab == "Abilities" and event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+        handle_abilities_drop(getattr(event, "pos", None) or pygame.mouse.get_pos())
+        return
     if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
         return
-    pos = pygame.mouse.get_pos()
+    pos = getattr(event, "pos", None) or pygame.mouse.get_pos()
     if settings_confirm and hub_tab == "Settings":
         return  # The confirm box has the screen
     for tab, rect in HUB_TAB_RECTS.items():
@@ -6665,6 +6774,8 @@ while running:
                     main_game_coins = coin_count  # Update main game coins
             elif event.key == pygame.K_F11:
                 pygame.display.toggle_fullscreen()  # True full screen on/off
+            elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_KP1, pygame.K_KP2, pygame.K_KP3) and not in_menu:
+                select_ability_slot({pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_KP1: 0, pygame.K_KP2: 1, pygame.K_KP3: 2}[event.key])
             elif event.key == pygame.K_m and no_death_cheat_enabled:
                 invincible = not invincible  # Toggle invincibility
             elif event.key == pygame.K_k and kill_cheat_enabled:
@@ -6781,7 +6892,7 @@ while running:
 
 
         # Shield activation (disabled in editor mode)
-        if has_shield and event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not (in_shooting_range and shooting_range_editor_mode):
+        if has_shield and equipped_ability == 'shield' and event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not (in_shooting_range and shooting_range_editor_mode):
             if shield_cooldown <= 0 and not shield_active:
                 shield_active = True
                 shield_timer = 0.0
@@ -7042,7 +7153,7 @@ while running:
             last_rot_angle = angle
 
             # Only move enemies if freeze is not active
-            if not (has_freeze and equipped_ability == 'freeze' and freeze_active):
+            if not (freeze_active):
                 for i in range(len(red_enemies)):
                     ex, ey = red_enemies[i]
                     if in_block_defence:
@@ -7096,7 +7207,7 @@ while running:
                     update_purple_minis(i)
 
             # Shockwave logic - kill enemies inside the expanding circle
-            if has_shockwave and equipped_ability == 'shockwave' and shockwave_active:
+            if shockwave_active:
                 player_center = (player_x + player_size // 2, player_y + player_size // 2)
                 # Kill red enemies inside shockwave
                 for i in reversed(range(len(red_enemies))):
@@ -7395,7 +7506,7 @@ while running:
         player_rect = pygame.Rect(player_x - camera_x, player_y - camera_y, player_size, player_size)
         for idx, (ex, ey) in enumerate(blue_enemies):
             # Only move blue enemies if not paused, freeze is not active and not in editor mode
-            if not game_paused and not (has_freeze and equipped_ability == 'freeze' and freeze_active) and not (in_shooting_range and shooting_range_editor_mode):
+            if not game_paused and not (freeze_active) and not (in_shooting_range and shooting_range_editor_mode):
                 target_x, target_y = enemy_target(ex, ey)
                 dx = target_x - ex
                 dy = target_y - ey
@@ -7407,7 +7518,7 @@ while running:
                     ey += dy * blue_enemy_speed
                 blue_enemies[idx] = [ex, ey]
             # Blue enemy shooting (also stopped while paused, frozen or in editor mode)
-            if not game_paused and not (has_freeze and equipped_ability == 'freeze' and freeze_active) and not (in_shooting_range and shooting_range_editor_mode):
+            if not game_paused and not (freeze_active) and not (in_shooting_range and shooting_range_editor_mode):
                 now = pygame.time.get_ticks() / 1000
                 while len(blue_last_shot_times) <= idx:
                     blue_last_shot_times.append(now)
@@ -7525,11 +7636,11 @@ while running:
             draw_block_defence_block()
         
         # Shield held out on the gun side
-        if has_shield and equipped_ability == 'shield' and shield_active:
+        if shield_active:
             draw_shield()
         
         # Draw shockwave: an expanding blast ring with a white-hot edge, trailing rings and energy spokes
-        if has_shockwave and equipped_ability == 'shockwave' and shockwave_active:
+        if shockwave_active:
             player_center = (player_x - camera_x + player_size // 2, player_y - camera_y + player_size // 2)
             progress = min(1.0, shockwave_timer / shockwave_duration)
             fade = 1 - progress
@@ -7559,7 +7670,7 @@ while running:
         draw_ability_badge(dt)
 
         # Shield collision logic
-        if has_shield and equipped_ability == 'shield' and shield_active:
+        if shield_active:
             # Red enemies
             for i in reversed(range(len(red_enemies))):
                 ex, ey = red_enemies[i]
@@ -7705,7 +7816,7 @@ while running:
         update_and_draw_effects(dt, game_paused)
 
         # Freeze: enemies locked in ice, and the whole screen frosted over
-        if has_freeze and equipped_ability == 'freeze' and freeze_active:
+        if freeze_active:
             draw_frozen_world()
 
         # Helpers movement, shooting, and drawing
@@ -7829,6 +7940,7 @@ while running:
             if not in_shooting_range and not in_tutorial:  # Waves
                 stats.append(enemy_stat)
         draw_stats_bar(stats)
+        draw_ability_slots_hud()
         draw_boss_health()
         draw_spectator_hud()
 
