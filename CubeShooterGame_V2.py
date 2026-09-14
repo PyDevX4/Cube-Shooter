@@ -9,6 +9,7 @@ import atexit
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # So the game finds cube_accounts.py next to it
 import cube_accounts
 import updater
+import sounds  # Sound effects: files dropped in the "sounds" folder play on their events
 from version import VERSION
 
 # Auto-update (built .exe only): looks for a newer release in the background and installs it from a menu
@@ -824,6 +825,7 @@ def spawn_death_effect(x, y, kind, color=None):
 
 def spawn_shot_clash(x, y):
     """Small purple-white spark where a player shot and an enemy shot destroy each other."""
+    sounds.play("shot_clash")
     effects.append({"type": "flash", "x": x, "y": y, "age": 0.0, "life": 0.2, "color": (230, 150, 255), "size": 0.5})
     for _ in range(8):
         a = random.uniform(0, 2 * math.pi)
@@ -906,6 +908,7 @@ def enemy_killed(ex, ey, kind):
     """Burst a defeated enemy (top-left world position ex, ey) into pieces and pop out its coin."""
     cx, cy = ex + player_size // 2, ey + player_size // 2
     spawn_death_effect(cx, cy, kind)
+    sounds.play("enemy_death")
     if not in_shooting_range:
         drop_coin(cx, cy)
     if in_block_defence:
@@ -2538,6 +2541,7 @@ def teal_explode(enemy):
     cx, cy = enemy["x"] + half, enemy["y"] + half
     if enemy in teal_enemies:
         teal_enemies.remove(enemy)
+    sounds.play("teal_explode")
     effects.append({"type": "flash", "x": cx, "y": cy, "age": 0.0, "life": 0.45, "color": (60, 255, 230), "size": 3.2})
     for _ in range(1 if enemy.get("swarm") else 3):  # Swarms of 100 use a lighter burst so the game doesn't lag
         spawn_death_effect(cx + random.uniform(-20, 20), cy + random.uniform(-20, 20), "teal")
@@ -2845,6 +2849,7 @@ def handle_block_menu_event(event):
     for (health, cost), button in zip(BLOCK_REPAIRS, buttons):
         if button.collidepoint(pos) and block_defence_points >= cost and block_health < BLOCK_MAX_HEALTH:
             block_defence_points -= cost
+            sounds.play("buy")
             block_health = min(BLOCK_MAX_HEALTH, block_health + health)
 
 def enemy_target():
@@ -2855,6 +2860,7 @@ def enemy_target():
 
 def damage_block(amount=1):
     global block_health, block_hit_flash
+    sounds.play("block_damage", 0.7)
     block_health = max(0, block_health - amount)
     block_hit_flash = 0.15
 
@@ -3088,6 +3094,7 @@ boss_push = [0.0, 0.0]      # The player's slide velocity after being shoved out
 def spawn_boss(kind):
     """The boss appears in the middle of the map. If the player is standing there, they get slid out of the way."""
     global active_boss
+    sounds.play("boss_spawn")
     cx, cy = MAP_WIDTH / 2, MAP_HEIGHT / 2
     max_health = BOSSES[kind].get("health", BOSS_HEALTH)  # 100 for the first six bosses, 200 from the Teal Boss on
     active_boss = {"kind": kind, "x": cx, "y": cy, "health": max_health, "max_health": max_health, "enraged": False, "flash": 0.0, "grace": 0.0,
@@ -3474,6 +3481,7 @@ def update_teal_boss(boss, dt):
             boss["phase"], boss["timer"] = "hidden", TEAL_BOSS_VANISH_WAIT
 
 def teal_boss_explode(boss):
+    sounds.play("teal_explode")
     effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.55, "color": (60, 255, 230), "size": 5.5})
     for _ in range(6):
         a = random.uniform(0, 2 * math.pi)
@@ -3776,6 +3784,7 @@ def hurt_boss(amount=1, force=False):
     if boss["kind"] == "blue" and not force:
         if boss["shielded"]:
             boss["ripple"] = 0.25  # The shot splashes off the shield
+            sounds.play("shield_block", 0.6)
             return
         boss["health"] -= amount
         boss["flash"] = 0.08
@@ -3789,6 +3798,7 @@ def hurt_boss(amount=1, force=False):
     if boss["kind"] == "teal" and not force:
         if boss["shielded"]:
             boss["ripple"] = 0.25
+            sounds.play("shield_block", 0.6)
             return
         boss["health"] -= amount
         boss["flash"] = 0.08
@@ -3802,6 +3812,7 @@ def hurt_boss(amount=1, force=False):
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
             boss["ripple"] = 0.25
+            sounds.play("shield_block", 0.6)
             return
         boss["health"] -= amount
         boss["flash"] = 0.08
@@ -3813,6 +3824,7 @@ def hurt_boss(amount=1, force=False):
     if boss["kind"] == "orange" and not force:
         if boss["shielded"]:
             boss["ripple"] = 0.25
+            sounds.play("shield_block", 0.6)
             return
         boss["health"] -= amount
         boss["flash"] = 0.08
@@ -3824,6 +3836,7 @@ def hurt_boss(amount=1, force=False):
     if boss["kind"] == "purple" and not force:
         if boss["shielded"]:
             boss["ripple"] = 0.25  # Orbs or tied-on purples still alive: shots splash off
+            sounds.play("shield_block", 0.6)
             return
         boss["health"] -= amount
         boss["flash"] = 0.08
@@ -3835,6 +3848,7 @@ def hurt_boss(amount=1, force=False):
         amount = 0
     boss["health"] -= amount
     boss["flash"] = 0.08
+    sounds.play("boss_hit", 0.5)
     if boss["health"] <= BOSS_HEALTH // 2 and not boss["enraged"]:
         boss["enraged"] = True
     if boss["health"] <= 0:
@@ -3843,6 +3857,7 @@ def hurt_boss(amount=1, force=False):
             a = random.uniform(0, 2 * math.pi)
             r = random.uniform(0, BOSS_RADIUS * 0.7)
             spawn_death_effect(boss["x"] + math.cos(a) * r, boss["y"] + math.sin(a) * r, shard_kind)
+        sounds.play("boss_death")
         spawn_death_effect(boss["x"], boss["y"], shard_kind)  # No coin: boss waves pay out when the wave completes
         for kind in info["minions"]:  # Its helpers all go with it
             for ex, ey in MINION_GROUPS[kind]():
@@ -4786,6 +4801,7 @@ def buy_shop_upgrade(item):
     if item["tag"] == "GUN":
         shot_delay = GUN_SHOT_DELAYS[gun_level()]
     console_message, console_message_timer = f"Bought {item['name']}!", 2.5
+    sounds.play("buy")
 
 def handle_upgrades_tab_click(pos):
     if not SHOP_UPGRADE_VIEWPORT.collidepoint(pos):
@@ -5238,8 +5254,12 @@ if _remembered_account is not None:
     login_remember = True
     log_in_as(_remembered_account, f"Welcome back, {_remembered_account['name']}!")
 
+was_game_over = False
 while running:
     dt = clock.tick(60) / 1000
+    if game_over and not was_game_over:
+        sounds.play("player_death")  # However the player died, the death sound plays once
+    was_game_over = game_over
 
     # A downloaded update gets installed as soon as you're on a menu (never in the middle of a game)
     if auto_updater.state == "ready" and (login_screen_open or start_screen or hub_open or settings_open):
@@ -5447,6 +5467,7 @@ while running:
                             
                             last_shot_time = current_time
                             shots_fired += 1
+                            sounds.play("shoot", 0.6)
         
 
         # Bottom-left mode buttons, plus the Shooting Range play/editor toggle
@@ -5474,6 +5495,7 @@ while running:
             if shield_cooldown <= 0 and not shield_active:
                 shield_active = True
                 shield_timer = 0.0
+                sounds.play("shield")
         if has_shield and event.type == pygame.MOUSEBUTTONUP and event.button == 3 and not (in_shooting_range and shooting_range_editor_mode):
             if shield_active:
                 shield_active = False
@@ -5668,6 +5690,7 @@ while running:
                     finished_boss_wave = bool(WAVES.get(wave - 1, {}).get("boss"))
                     wave_completion_message = "Boss Wave Completed!" if finished_boss_wave else f"Wave {wave - 1} Complete!"
                     wave_completion_reward = BOSSES[WAVES[wave - 1]["boss"]]["reward"] if finished_boss_wave else 15
+                    sounds.play("boss_wave_complete" if finished_boss_wave else "wave_complete")
                     best_wave = max(best_wave, wave - 1)  # Saved to the account
                     wave_completion_timer = wave_completion_duration
                     coin_count += wave_completion_reward
@@ -5963,6 +5986,7 @@ while running:
                     if dist < player_size:
                         coins.remove(coin)
                         coin_count += 1
+                        sounds.play("coin", 0.7)
                         # Update the appropriate coin variable based on game mode
                         if in_block_defence:
                             block_defence_coins = coin_count

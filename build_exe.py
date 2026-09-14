@@ -173,7 +173,9 @@ def main():
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--windowed",
            "--name", os.path.splitext(ASSET)[0], "--icon", ICON,
            "--hidden-import", "cube_accounts", "--hidden-import", "updater", "--hidden-import", "version",
-           ENTRY]
+           "--hidden-import", "sounds", ENTRY]
+    if os.path.isdir(os.path.join(HERE, "sounds")):
+        cmd[-1:-1] = ["--add-data", "sounds" + os.pathsep + "sounds"]  # Bundled, so updates carry new sounds too
     print(" ".join(cmd))
     if subprocess.call(cmd) != 0:
         sys.exit("PyInstaller failed")
