@@ -2849,8 +2849,8 @@ def draw_teal_enemies():
         if enemy["fuse"] is None:
             alpha = TEAL_HIDDEN_ALPHA
         elif enemy.get("ghost"):
-            alpha = TEAL_GHOST_ALPHA  # 95% invisible: only a faint shimmer (and a faint blast circle)
             charge = min(1.0, enemy["fuse"] / enemy.get("fuse_len", TEAL_FUSE))
+            alpha = int(60 + 70 * charge)  # Faint, but as easy to see as its blast circle's edge, so you can shoot it
             ring = pygame.Surface((TEAL_BLAST_RADIUS * 2 + 20, TEAL_BLAST_RADIUS * 2 + 20), pygame.SRCALPHA)
             c = TEAL_BLAST_RADIUS + 10
             pygame.draw.circle(ring, (60, 255, 230, int(10 + 18 * charge)), (c, c), TEAL_BLAST_RADIUS)
