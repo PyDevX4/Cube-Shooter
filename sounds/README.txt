@@ -17,3 +17,5 @@ teal_explode        teal_explode, explosion, explode, boom
 block_damage        block_damage, block_hit                 (Block Defence)
 buy                 buy, purchase, repair, upgrade, shop
 shield              shield, shield_on, player_shield        (you turn your shield on)
+violet_grab         violet_grab, grab, tentacle_grab        (a violet grabs you)
+tentacle_cut        tentacle_cut, tentacle_hit, cut          (you shoot off a tentacle)

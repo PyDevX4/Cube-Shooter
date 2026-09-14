@@ -2453,46 +2453,98 @@ def dict_enemy_groups():
     """The enemies stored as dicts, with their kind name."""
     return (("orange", orange_enemies), ("yellow", yellow_enemies), ("teal", teal_enemies), ("pink", pink_enemies), ("violet", violet_enemies))
 
-# ---- Violet pulling enemy ----
-violet_enemies = []  # Each is a dict: position and a spin angle for its swirl
-VIOLET_PULL_RANGE = 420      # Starts pulling the player in inside this distance
-VIOLET_MAX_PULL = 8.5        # Pull (pixels per frame) right next to it - faster than the player can walk (5)
-VIOLET_MIN_PULL = 0.6        # Pull at the very edge of its range
+# ---- Violet tentacle enemy ----
+violet_enemies = []  # Each is a dict: position, which of its 8 tentacles are left, and a sway timer
+VIOLET_TENTACLES = 8
+VIOLET_SEGMENTS = 11          # Joints per tentacle
+VIOLET_SEGMENT_LENGTH = 15    # So each tentacle reaches ~165 px out from its body
+VIOLET_TENTACLE_HIT = 13      # How close a shot has to pass to a joint to cut the tentacle off
+VIOLET_GRAB_PULL = 7.5        # Pixels per frame you get dragged in once grabbed (faster than you can walk)
+violet_grab = None            # While you're held: {"k": tentacle index, "id": the violet that grabbed you}
 
 def new_violet_enemy(x, y):
-    return {"x": x, "y": y, "swirl": random.uniform(0, 2 * math.pi)}
+    return {"x": x, "y": y, "arms": [True] * VIOLET_TENTACLES, "sway": random.uniform(0, 100), "id": random.getrandbits(40)}
 
-def violet_pull_strength(distance):
-    """0 outside the range; grows faster and faster as the player gets closer."""
-    if distance >= VIOLET_PULL_RANGE:
-        return 0.0
-    closeness = 1 - distance / VIOLET_PULL_RANGE  # 0 at the edge, 1 right next to it
-    return VIOLET_MIN_PULL + (VIOLET_MAX_PULL - VIOLET_MIN_PULL) * closeness ** 1.3  # Within ~150px you can't walk away
+def violet_tentacle_points(enemy, k, grab_to=None):
+    """The joints of tentacle k, from the body out to the tip. A gripping tentacle stretches to what it holds."""
+    half = player_size / 2
+    cx, cy = enemy["x"] + half, enemy["y"] + half
+    base = k * 2 * math.pi / VIOLET_TENTACLES
+    sx, sy = cx + math.cos(base) * (half - 4), cy + math.sin(base) * (half - 4)
+    if grab_to is not None:
+        gx, gy = grab_to
+        return [(sx + (gx - sx) * j / VIOLET_SEGMENTS, sy + (gy - sy) * j / VIOLET_SEGMENTS) for j in range(VIOLET_SEGMENTS + 1)]
+    points, x, y = [(sx, sy)], sx, sy
+    for j in range(1, VIOLET_SEGMENTS + 1):
+        # Each joint bends a little more than the last, in a slow wave, so the tentacles ripple and curl
+        bend = math.sin(enemy["sway"] * 1.4 + k * 1.7 - j * 0.45) * 0.34 * (j / VIOLET_SEGMENTS) + 0.09 * j / VIOLET_SEGMENTS
+        angle = base + bend * j * 0.35
+        x += math.cos(angle) * VIOLET_SEGMENT_LENGTH
+        y += math.sin(angle) * VIOLET_SEGMENT_LENGTH
+        points.append((x, y))
+    return points
+
+def violet_center(enemy):
+    return enemy["x"] + player_size / 2, enemy["y"] + player_size / 2
+
+def violet_holding_you():
+    """The violet currently holding you, or None (only that exact violet - never whichever one is nearest)."""
+    if violet_grab is None:
+        return None
+    return next((e for e in violet_enemies if e.get("id") == violet_grab["id"]), None)
 
 def update_violet_enemies(dt):
-    """Violets never move. Any in range drag the player toward them; touching one kills."""
-    global player_x, player_y
+    """Violets walk at the nearest player like reds, tentacles swaying. Touch a tentacle (or the body) and it grabs
+    you and drags you in; reaching the body kills you. Cutting off the tentacle that holds you lets you go."""
+    global player_x, player_y, violet_grab
     if has_freeze and equipped_ability == 'freeze' and freeze_active:
         return
     half = player_size / 2
     for enemy in violet_enemies:
-        enemy["swirl"] = (enemy["swirl"] + dt * 3) % (2 * math.pi)
+        enemy["sway"] += dt
+        tx, ty = enemy_target(enemy["x"], enemy["y"])
+        dx, dy = tx - enemy["x"], ty - enemy["y"]
+        dist = math.hypot(dx, dy)
+        if dist > 1:
+            enemy["x"] += dx / dist * red_enemy_speed
+            enemy["y"] += dy / dist * red_enemy_speed
+    holder = violet_holding_you()
+    if violet_grab is not None:
+        if holder is None or not holder["arms"][violet_grab["k"]] or game_over or spectating:
+            violet_grab = None  # It died, or lost that tentacle: you're free
+            holder = None
     if in_block_defence or game_over or spectating:
         return
-    for enemy in violet_enemies:
-        cx, cy = enemy["x"] + half, enemy["y"] + half
-        px, py = player_x + half, player_y + half
+    px, py = player_x + half, player_y + half
+    if violet_grab is not None:
+        cx, cy = violet_center(holder)
         distance = math.hypot(cx - px, cy - py)
-        pull = violet_pull_strength(distance)
-        if pull > 0 and distance > 1:
-            step = min(pull, distance)
-            player_x += (cx - px) / distance * step
-            player_y += (cy - py) / distance * step
-        if not player_safe() and math.hypot(enemy["x"] - player_x, enemy["y"] - player_y) < player_size:
-            player_hit()
+        if distance < player_size:  # Pulled all the way in
+            violet_grab = None
+            if not player_safe():
+                player_hit()
             return
+        step = min(VIOLET_GRAB_PULL, distance)
+        player_x += (cx - px) / distance * step
+        player_y += (cy - py) / distance * step
+        return
+    if player_safe():
+        return
+    for enemy in violet_enemies:
+        cx, cy = violet_center(enemy)
+        if math.hypot(cx - px, cy - py) < player_size:
+            player_hit()  # Walked straight into the body
+            return
+        if math.hypot(cx - px, cy - py) > VIOLET_SEGMENTS * VIOLET_SEGMENT_LENGTH + half + 20:
+            continue
+        for k in range(VIOLET_TENTACLES):
+            if enemy["arms"][k] and any(math.hypot(x - px, y - py) < half + 6 for x, y in violet_tentacle_points(enemy, k)[2:]):
+                violet_grab = {"k": k, "id": enemy.setdefault("id", random.getrandbits(40))}
+                sounds.play("violet_grab")
+                return
 
 def violet_hit(bullet_rect):
+    """A shot on the body kills the violet; a shot on a tentacle cuts that tentacle off."""
     global kills
     for enemy in violet_enemies:
         if bullet_rect.colliderect(pygame.Rect(enemy["x"], enemy["y"], player_size, player_size)):
@@ -2500,35 +2552,54 @@ def violet_hit(bullet_rect):
             enemy_killed(enemy["x"], enemy["y"], "violet")
             kills += 1
             return True
+    bx, by = bullet_rect.center
+    reach = VIOLET_SEGMENTS * VIOLET_SEGMENT_LENGTH + player_size
+    holder = violet_holding_you()
+    for enemy in violet_enemies:
+        cx, cy = violet_center(enemy)
+        if math.hypot(cx - bx, cy - by) > reach:
+            continue
+        for k in range(VIOLET_TENTACLES):
+            if not enemy["arms"][k]:
+                continue
+            grab_to = (player_x + player_size / 2, player_y + player_size / 2) if enemy is holder and violet_grab["k"] == k else None
+            joints = violet_tentacle_points(enemy, k, grab_to)
+            if any(math.hypot(x - bx, y - by) < VIOLET_TENTACLE_HIT for x, y in joints[2:]):
+                enemy["arms"][k] = False
+                tip_x, tip_y = joints[len(joints) * 2 // 3]
+                spawn_death_effect(tip_x, tip_y, "purple_mini", (200, 160, 255))
+                sounds.play("tentacle_cut")
+                return True
     return False
 
 def draw_violet_enemies():
     half = player_size / 2
     look_x, look_y = player_x - camera_x + half, player_y - camera_y + half
-    px, py = player_x + half, player_y + half
+    holder = violet_holding_you()
+    reach = VIOLET_SEGMENTS * VIOLET_SEGMENT_LENGTH + 30
     for enemy in violet_enemies:
         cx, cy = enemy["x"] - camera_x + half, enemy["y"] - camera_y + half
-        if not on_screen(cx, cy, VIOLET_PULL_RANGE):
+        if not on_screen(cx, cy, reach):
             continue
-        distance = math.hypot(enemy["x"] + half - px, enemy["y"] + half - py)
-        strength = violet_pull_strength(distance) / VIOLET_MAX_PULL  # 0..1, how hard it's pulling right now
-        near = distance < VIOLET_PULL_RANGE + 250  # Only draw the big pull area when the player is close to it
-        reach = VIOLET_PULL_RANGE if near else half + 110
-        size = int(reach * 2 + 20)
-        swirl = pygame.Surface((size, size), pygame.SRCALPHA)
-        c = size / 2
-        t = pygame.time.get_ticks() / 1000
-        if near:
-            pygame.draw.circle(swirl, (170, 130, 255, int(30 + 50 * strength)), (c, c), VIOLET_PULL_RANGE)  # Pull area
-            pygame.draw.circle(swirl, (190, 140, 255, int(130 + 100 * strength)), (c, c), VIOLET_PULL_RANGE, 3)
-            for k in range(3):  # Rings shrinking inward, faster when it's pulling hard
-                r = VIOLET_PULL_RANGE * (1 - ((t * (0.35 + 0.9 * strength) + k / 3) % 1))
-                pygame.draw.circle(swirl, (185, 135, 255, int(110 + 130 * strength)), (c, c), max(4, r), 3)
-        for k in range(6):  # Spiral arms
-            a = enemy["swirl"] + k * math.pi / 3
-            pts = [(c + math.cos(a + j * 0.35) * (half + 12 + j * 16), c + math.sin(a + j * 0.35) * (half + 12 + j * 16)) for j in range(6)]
-            pygame.draw.lines(swirl, (195, 145, 255, int(170 + 85 * strength)), False, pts, 4)
-        screen.blit(swirl, (cx - c, cy - c))
+        for k in range(VIOLET_TENTACLES):
+            if not enemy["arms"][k]:
+                pygame.draw.circle(screen, (110, 70, 160), (cx + math.cos(k * math.pi / 4) * (half - 2),
+                                                             cy + math.sin(k * math.pi / 4) * (half - 2)), 5)  # Stump
+                continue
+            gripping = enemy is holder and violet_grab["k"] == k
+            grab_to = (player_x + half, player_y + half) if gripping else None
+            joints = [(x - camera_x, y - camera_y) for x, y in violet_tentacle_points(enemy, k, grab_to)]
+            for j, (x, y) in enumerate(joints):  # Thick at the body, thin at the tip
+                width = 10 - 7 * j / VIOLET_SEGMENTS
+                shade = j / VIOLET_SEGMENTS
+                color = (int(120 + 90 * shade), int(70 + 90 * shade), int(185 + 55 * shade))
+                if gripping:
+                    color = (min(255, color[0] + 50), color[1], min(255, color[2] + 15))
+                if j > 0:
+                    pygame.draw.line(screen, color, joints[j - 1], (x, y), max(2, int(width * 1.6)))
+                pygame.draw.circle(screen, color, (x, y), max(2, int(width * 0.8)))
+                if 2 <= j <= VIOLET_SEGMENTS - 2 and j % 2 == 0:  # Little suckers along each tentacle
+                    pygame.draw.circle(screen, (235, 215, 255), (x, y), max(1, int(width * 0.3)))
         draw_orb(violet_orb, enemy_shadow, cx, cy)
         draw_eye(cx, cy, look_x, look_y, 8, half * 0.3)
 
@@ -4403,7 +4474,7 @@ ENEMY_TYPES = [("red", "Red", "Chases you down"), ("green", "Green", "Fast chase
                ("blue", "Blue", "Shoots red lasers"), ("purple", "Purple", "Guarded by 4 minis"),
                ("orange", "Orange", "Fires a long laser"), ("yellow", "Yellow", "Flings a charged orb"),
                ("teal", "Teal", "Sneaks up and explodes"), ("pink", "Pink", "Zigzags in diagonally"),
-               ("violet", "Violet", "Stands still and pulls you in")]
+               ("violet", "Violet", "Tentacles grab you and drag you in")]
 
 def enemy_menu_layout():
     """Panel, each enemy row with its three buttons, and the Close button, at the current slide position."""
@@ -7130,7 +7201,7 @@ while running:
         draw_orange_enemies()
         draw_yellow_enemies()
         draw_teal_enemies()
-        draw_violet_enemies()  # Under the others, since its swirl covers a big area
+        draw_violet_enemies()  # Under the others, since its tentacles reach out a long way
         draw_pink_enemies()
         draw_boss()
         if active_boss is not None:

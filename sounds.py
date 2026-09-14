@@ -32,7 +32,10 @@ EVENTS = {
     "teal_explode":       ["teal_explode", "explosion", "explode", "boom"],
     "block_damage":       ["block_damage", "block_hit"],
     "buy":                ["buy", "buy_something", "purchase", "repair", "upgrade", "shop"],
-    "shield":             ["shield", "shield_on", "player_shield"],}
+    "shield":             ["shield", "shield_on", "player_shield"],
+    "violet_grab":        ["violet_grab", "grab", "tentacle_grab"],
+    "tentacle_cut":       ["tentacle_cut", "tentacle_hit", "cut"],
+}
 
 MIN_GAP = 0.04       # The same sound can't restart faster than this (a 30-enemy wipe shouldn't be deafening)
 RESCAN_EVERY = 2.0
