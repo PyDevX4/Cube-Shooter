@@ -1,0 +1,17 @@
+# Player data - never publish accounts (even hashed passwords) or local update leftovers
+cube_shooter_save.json
+cube_shooter_save.json.tmp
+update.log
+update.bat
+*.new.exe
+*.new.exe.part
+
+# Build output (the releases carry the builds)
+dist/
+build/
+*.spec
+icon.ico
+
+# Old copies and caches
+*_backup.py
+__pycache__/
