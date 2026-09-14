@@ -971,7 +971,7 @@ def draw_world_background(zoom=1.0):
         x += step
 
     # Playable map in screen coordinates (Storm Survival shrinks it around the original map center)
-    if in_storm_survival:
+    if shrunk_map():
         left = MAP_WIDTH // 2 - storm_survival_map_width // 2
         top = MAP_HEIGHT // 2 - storm_survival_map_height // 2
         right = MAP_WIDTH // 2 + storm_survival_map_width // 2
@@ -1122,7 +1122,7 @@ def game_button_rects():
     are gone from the HUD - they live in the pause menu (Escape) now."""
     labels = []
     if in_shooting_range:
-        labels = [("Add Enemies", GREEN, smaller_button_font, 150)]
+        labels = []  # The spawn menu opens with Tab now
     buttons, x = [], 20
     for name, color, label_font, width in labels:
         buttons.append((name, pygame.Rect(x, HEIGHT - 60, width, 40), color, label_font))
@@ -1831,7 +1831,7 @@ def draw_minimap():
     surf = pygame.Surface((size, size), pygame.SRCALPHA)
     surf.fill((18, 26, 18, 210))
     # The playable area (Barrier Shrink shrinks it)
-    if in_storm_survival:
+    if shrunk_map():
         left = MAP_WIDTH // 2 - storm_survival_map_width // 2
         top = MAP_HEIGHT // 2 - storm_survival_map_height // 2
         width, height = storm_survival_map_width, storm_survival_map_height
@@ -2209,6 +2209,7 @@ def exit_to_main_menu():
     global game_over, game_paused, pause_countdown
     g = globals()
     g["enemy_menu_open"] = False  # Leaving the Sandbox closes its menu
+    g["sandbox_place"] = None
     g["block_menu_open"] = False
     start_screen = True
     game_over = False
@@ -2335,7 +2336,7 @@ def turn_toward(current, target, max_step):
 
 def laser_reach(x, y, angle):
     """How far a laser from (x, y) travels along `angle` before it hits the barrier."""
-    if in_storm_survival:
+    if shrunk_map():
         left = MAP_WIDTH // 2 - storm_survival_map_width // 2
         top = MAP_HEIGHT // 2 - storm_survival_map_height // 2
         right, bottom = left + storm_survival_map_width, top + storm_survival_map_height
@@ -4557,44 +4558,99 @@ ENEMY_TYPES = [("red", "Red", "Chases you down"), ("green", "Green", "Fast chase
                ("teal", "Teal", "Sneaks up and explodes"), ("pink", "Pink", "Zigzags in diagonally"),
                ("violet", "Violet", "Tentacles grab you and drag you in")]
 
+SANDBOX_TABS = ["Spawn", "Game Settings"]
+sandbox_tab = "Spawn"
+sandbox_spawn_list = "Enemies"   # The switch above the logos: "Enemies" or "Bosses"
+sandbox_place = None          # Placing something: {"kind", "boss": bool, "dragging": bool, "start": (x, y), "moved": bool}
+sandbox_barrier = 1.0         # Barrier size in the Sandbox, as a share of the full map (1.0 = normal, the max)
+SANDBOX_BARRIER_MIN = 0.15
+BOSS_KINDS = [kind for kind in BOSSES]
+sandbox_logo_cache = {}
+
+def shrunk_map():
+    """True when the barrier is smaller than the whole map: Barrier Shrink, or a Sandbox with a smaller barrier."""
+    return in_storm_survival or (in_shooting_range and sandbox_barrier < 0.999)
+
+def apply_sandbox_barrier():
+    global storm_survival_map_width, storm_survival_map_height
+    storm_survival_map_width = int(MAP_WIDTH * sandbox_barrier)
+    storm_survival_map_height = int(MAP_HEIGHT * sandbox_barrier)
+
+def sandbox_logo(kind, boss):
+    """A round logo for an enemy or boss (bosses get a crown ring)."""
+    key = (kind, boss)
+    if key not in sandbox_logo_cache:
+        orbs = {"red": red_orb, "green": green_orb, "blue": blue_orb, "purple": purple_orb, "orange": orange_orb,
+                "yellow": yellow_orb, "teal": teal_orb, "pink": pink_orb, "violet": violet_orb}
+        size = 72
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        if boss:
+            orb = create_orb_sprite(BOSSES[kind]["color"], 30, glow=4)
+            surf.blit(pygame.transform.smoothscale(orb, (size - 6, size - 6)), (3, 3))
+            pygame.draw.circle(surf, (255, 215, 80), (size // 2, size // 2), size // 2 - 2, 3)
+            crown = [(22, 26), (28, 12), (36, 22), (44, 12), (50, 26)]
+            pygame.draw.polygon(surf, (255, 215, 80), crown + [(50, 30), (22, 30)])
+        else:
+            surf.blit(pygame.transform.smoothscale(orbs[kind], (size, size)), (0, 0))
+        sandbox_logo_cache[key] = surf
+    return sandbox_logo_cache[key]
+
 def enemy_menu_layout():
-    """Panel, each enemy row with its three buttons, and the Close button, at the current slide position."""
-    row_gap = 72  # Tight rows so every enemy fits on screen
-    width, height = 760, 96 + len(ENEMY_TYPES) * row_gap + 76
-    resting_y = HEIGHT // 2 - height // 2
-    y = -height + (height + resting_y) * ease_out_back(min(1.0, enemy_menu_anim))
-    panel = pygame.Rect(WIDTH // 2 - width // 2, y, width, height)
-    rows = []
-    for i, (kind, name, blurb) in enumerate(ENEMY_TYPES):
-        row = pygame.Rect(panel.x + 24, panel.y + 96 + i * row_gap, width - 48, 64)
-        buttons = {"add": pygame.Rect(row.right - 390, row.centery - 22, 110, 44),
-                   "remove": pygame.Rect(row.right - 268, row.centery - 22, 120, 44),
-                   "clear": pygame.Rect(row.right - 136, row.centery - 22, 124, 44)}
-        rows.append((kind, name, blurb, row, buttons))
-    close = pygame.Rect(panel.centerx - 90, panel.bottom - 64, 180, 48)
-    return panel, rows, close
+    """Where everything is at the current slide position: the side bar (Spawn) or middle panel (Game Settings),
+    the tabs along the top of the screen, the logo cards, and the other buttons."""
+    slide = ease_out_back(min(1.0, enemy_menu_anim))
+    bar_y = -60 + 66 * slide
+    tab_w = 220
+    left = WIDTH // 2 - (len(SANDBOX_TABS) * tab_w + (len(SANDBOX_TABS) - 1) * 14) // 2
+    tabs = [(name, pygame.Rect(left + i * (tab_w + 14), bar_y, tab_w, 40)) for i, name in enumerate(SANDBOX_TABS)]
+    extra = {"close": pygame.Rect(tabs[-1][1].right + 30, bar_y, 130, 40)}
+    cards = []
+    if sandbox_tab == "Spawn":
+        width = 210
+        panel = pygame.Rect(-width - 20 + (width + 32) * slide, 76, width, HEIGHT - 90)
+        half = (width - 30) // 2
+        extra["enemies"] = pygame.Rect(panel.x + 10, panel.y + 10, half, 40)
+        extra["bosses"] = pygame.Rect(panel.x + 20 + half, panel.y + 10, half, 40)
+        kinds = [k for k, _, _ in ENEMY_TYPES] if sandbox_spawn_list == "Enemies" else BOSS_KINDS
+        room = panel.height - 60 - 90
+        row_h = min(76, room // max(1, len(kinds)))
+        for i, kind in enumerate(kinds):
+            cards.append((kind, pygame.Rect(panel.x + 10, panel.y + 58 + i * row_h, width - 20, row_h - 6)))
+        extra["clear"] = pygame.Rect(panel.x + 10, panel.bottom - 54, width - 20, 44)
+    else:
+        width, height = 760, 420
+        panel = pygame.Rect(WIDTH // 2 - width // 2, HEIGHT // 2 - height // 2 + (1 - slide) * HEIGHT, width, height)
+        extra["track"] = pygame.Rect(panel.centerx - 250, panel.y + 170, 500, 14)
+        extra["minus"] = pygame.Rect(panel.centerx - 330, panel.y + 152, 50, 50)
+        extra["plus"] = pygame.Rect(panel.centerx + 280, panel.y + 152, 50, 50)
+    return panel, tabs, cards, extra
+
 
 def sandbox_enemy_group(kind):
     return {"red": red_enemies, "green": green_enemies, "blue": blue_enemies, "purple": purple_enemies,
             "orange": orange_enemies, "yellow": yellow_enemies, "teal": teal_enemies, "pink": pink_enemies, "violet": violet_enemies}[kind]
 
-def sandbox_add_enemy(kind):
+def sandbox_add_enemy(kind, at=None):
+    """Add one enemy: at a world point (its center) if given, otherwise somewhere off screen."""
     global max_red_enemies, max_green_enemies, max_blue_enemies, max_purple_enemies
+    pos = [at[0] - player_size / 2, at[1] - player_size / 2] if at else get_safe_enemy_spawn()
     if kind == "orange":
-        orange_enemies.append(new_orange_enemy(*get_safe_enemy_spawn()))
+        orange_enemies.append(new_orange_enemy(*pos))
     elif kind == "yellow":
-        yellow_enemies.append(new_yellow_enemy(*get_safe_enemy_spawn()))
+        yellow_enemies.append(new_yellow_enemy(*pos))
     elif kind == "teal":
-        teal_enemies.append(new_teal_enemy(*get_safe_enemy_spawn()))
+        teal_enemies.append(new_teal_enemy(*pos))
     elif kind == "pink":
-        pink_enemies.append(new_pink_enemy(*get_safe_enemy_spawn()))
+        pink_enemies.append(new_pink_enemy(*pos))
     elif kind == "violet":
-        violet_enemies.append(new_violet_enemy(*get_safe_enemy_spawn()))
+        violet_enemies.append(new_violet_enemy(*pos))
     elif kind == "purple":
         spawn_purple()
+        purple_enemies[-1] = list(pos)
+        update_purple_minis(len(purple_enemies) - 1)
         max_purple_enemies = len(purple_enemies)
     else:
-        sandbox_enemy_group(kind).append(get_safe_enemy_spawn())
+        sandbox_enemy_group(kind).append(list(pos))
         if kind == "blue":
             blue_last_shot_times.append(0)
             max_blue_enemies = len(blue_enemies)
@@ -4603,45 +4659,30 @@ def sandbox_add_enemy(kind):
         else:
             max_red_enemies = len(red_enemies)
 
-def sandbox_remove_enemy(kind, everything=False):
-    """Remove one random enemy of this kind, or all of them."""
+def sandbox_add_boss(kind, at):
+    """Put a boss where you chose (replacing any boss already there - one at a time)."""
+    kill_all_boss_minions = active_boss is not None
+    spawn_boss(kind)
+    active_boss["x"], active_boss["y"] = at
+    active_boss["grace"] = 1.0
+    boss_push[:] = [0.0, 0.0]
+    if kill_all_boss_minions:
+        pass  # Its helpers stay; clear them with Remove All Enemies if you want
+
+def sandbox_clear_enemies():
     global max_red_enemies, max_green_enemies, max_blue_enemies, max_purple_enemies
-    group = sandbox_enemy_group(kind)
-    if not group:
-        return
-    if kind in ("orange", "yellow", "teal", "pink", "violet"):
-        if everything:
-            group.clear()
-        else:
-            group.pop(random.randrange(len(group)))
-        return
-    if kind == "purple":
-        if everything:
-            purple_enemies.clear()
-            purple_mini_circles.clear()
-        else:
-            remove_purple(random.randrange(len(purple_enemies)))
-        max_purple_enemies = len(purple_enemies)
-        return
-    if everything:
-        group.clear()
-        if kind == "blue":
-            blue_last_shot_times.clear()
-    else:
-        index = random.randrange(len(group))
-        group.pop(index)
-        if kind == "blue" and index < len(blue_last_shot_times):
-            blue_last_shot_times.pop(index)
-    if kind == "red":
-        max_red_enemies = len(red_enemies)
-    elif kind == "green":
-        max_green_enemies = len(green_enemies)
-    else:
-        max_blue_enemies = len(blue_enemies)
+    for kind, _, _ in ENEMY_TYPES:
+        sandbox_enemy_group(kind).clear()
+    purple_mini_circles.clear()
+    blue_last_shot_times.clear()
+    blue_bullets.clear()
+    max_red_enemies = max_green_enemies = max_blue_enemies = max_purple_enemies = 0
 
 def open_enemy_menu():
-    global enemy_menu_open, enemy_menu_was_paused, game_paused
-    enemy_menu_was_paused = game_paused
+    global enemy_menu_open, enemy_menu_was_paused, game_paused, sandbox_place
+    if sandbox_place is None or not sandbox_place.get("dragging"):
+        enemy_menu_was_paused = game_paused
+    sandbox_place = None
     enemy_menu_open = True
     game_paused = True
 
@@ -4650,51 +4691,199 @@ def close_enemy_menu():
     enemy_menu_open = False
     game_paused = enemy_menu_was_paused
 
+def world_mouse(pos=None):
+    mx, my = pos or pygame.mouse.get_pos()
+    return mx + camera_x, my + camera_y
+
+def place_selected(pos=None):
+    """Spawn what's being placed at the mouse."""
+    at = world_mouse(pos)
+    if sandbox_place["boss"]:
+        sandbox_add_boss(sandbox_place["kind"], at)
+    else:
+        sandbox_add_enemy(sandbox_place["kind"], at)
+    spawn_teleport_flash(at[0], at[1], at[0], at[1], (255, 230, 140))
+
 def draw_enemy_menu():
-    shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    shade.fill((0, 0, 0, int(150 * min(1.0, enemy_menu_anim))))
-    screen.blit(shade, (0, 0))
-    panel, rows, close = enemy_menu_layout()
-    draw_panel(panel)
-    title = get_bubble_text("Add Enemies", 56, (255, 240, 150), (255, 160, 40))
-    screen.blit(title, title.get_rect(center=(panel.centerx, panel.y + 52)))
-    orbs = {"red": red_orb, "green": green_orb, "blue": blue_orb, "purple": purple_orb, "orange": orange_orb, "yellow": yellow_orb, "teal": teal_orb, "pink": pink_orb, "violet": violet_orb}
-    for kind, name, blurb, row, buttons in rows:
-        draw_panel(row, radius=12)
-        icon = pygame.transform.smoothscale(orbs[kind], (52, 52))
-        screen.blit(icon, icon.get_rect(midleft=(row.x + 10, row.centery)))
-        name_text = button_font.render(name, True, WHITE)
-        screen.blit(name_text, (row.x + 72, row.y + 8))
-        blurb_text = small_button_font.render(blurb, True, (190, 196, 205))
-        screen.blit(blurb_text, (row.x + 72, row.y + 40))
-        count_text = coin_font.render(f"x{len(sandbox_enemy_group(kind))}", True, (255, 222, 95))
-        screen.blit(count_text, count_text.get_rect(midright=(buttons["add"].x - 18, row.centery)))
-        for action, label, color in (("add", "Add 1", GREEN), ("remove", "Remove 1", BLUE), ("clear", "Remove All", DARK_RED)):
-            draw_button(buttons[action], color)
+    panel, tabs, cards, extra = enemy_menu_layout()
+    if sandbox_tab == "Game Settings":  # Only this tab darkens the game; Spawn leaves the map in plain view
+        shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        shade.fill((0, 0, 0, int(150 * min(1.0, enemy_menu_anim))))
+        screen.blit(shade, (0, 0))
+    for name, rect in tabs:
+        draw_button(rect, YELLOW if name == sandbox_tab else BLUE)
+        text = small_button_font.render(name, True, BLACK)
+        screen.blit(text, text.get_rect(center=rect.center))
+    draw_button(extra["close"], RED)
+    close_text = small_button_font.render("Close", True, BLACK)
+    screen.blit(close_text, close_text.get_rect(center=extra["close"].center))
+    pygame.draw.rect(screen, (24, 28, 38), panel, border_radius=14)
+    draw_panel(panel, radius=14)
+    if sandbox_tab == "Spawn":
+        for key, label in (("enemies", "Enemies"), ("bosses", "Bosses")):
+            draw_button(extra[key], YELLOW if sandbox_spawn_list == label else BLUE)
             text = smaller_button_font.render(label, True, BLACK)
-            screen.blit(text, text.get_rect(center=buttons[action].center))
-    draw_button(close, BLUE)
-    close_text = button_font.render("Close", True, BLACK)
-    screen.blit(close_text, close_text.get_rect(center=close.center))
+            screen.blit(text, text.get_rect(center=extra[key].center))
+        boss = sandbox_spawn_list == "Bosses"
+        names = dict((k, n) for k, n, _ in ENEMY_TYPES)
+        for kind, card in cards:
+            chosen = sandbox_place is not None and sandbox_place["kind"] == kind and sandbox_place["boss"] == boss
+            pygame.draw.rect(screen, (70, 64, 30) if chosen else (36, 40, 52), card, border_radius=10)
+            if chosen:
+                pygame.draw.rect(screen, (255, 215, 80), card, 2, border_radius=10)
+            size = min(52, card.height - 8)
+            logo = pygame.transform.smoothscale(sandbox_logo(kind, boss), (size, size))
+            screen.blit(logo, logo.get_rect(midleft=(card.x + 6, card.centery)))
+            label = BOSSES[kind]["name"].title().replace(" Boss", "") if boss else names[kind]
+            text = small_button_font.render(label, True, WHITE)
+            screen.blit(text, (card.x + size + 14, card.centery - text.get_height() + 2))
+            if boss:
+                here = active_boss is not None and active_boss["kind"] == kind
+                info = "on the map" if here else f"{BOSSES[kind].get('health', BOSS_HEALTH)} hp"
+            else:
+                info = f"x{len(sandbox_enemy_group(kind))}"
+            count = smaller_button_font.render(info, True, (255, 222, 95))
+            screen.blit(count, (card.x + size + 14, card.centery + 2))
+        draw_button(extra["clear"], DARK_RED)
+        text = smaller_button_font.render("Remove All" if not boss else "Remove Boss", True, BLACK)
+        screen.blit(text, text.get_rect(center=extra["clear"].center))
+    else:
+        heading = coin_font.render("Barrier size", True, WHITE)
+        screen.blit(heading, heading.get_rect(center=(panel.centerx, panel.y + 90)))
+        track = extra["track"]
+        pygame.draw.rect(screen, (60, 66, 80), track, border_radius=7)
+        filled = track.copy()
+        filled.width = int(track.width * (sandbox_barrier - SANDBOX_BARRIER_MIN) / (1 - SANDBOX_BARRIER_MIN))
+        pygame.draw.rect(screen, (255, 90, 80), filled, border_radius=7)
+        pygame.draw.circle(screen, WHITE, (filled.right, track.centery), 16)
+        pygame.draw.circle(screen, (255, 90, 80), (filled.right, track.centery), 16, 4)
+        for key, label in (("minus", "-"), ("plus", "+")):
+            draw_button(extra[key], BLUE)
+            text = button_font.render(label, True, BLACK)
+            screen.blit(text, text.get_rect(center=extra[key].center))
+        value = coin_font.render(f"{round(sandbox_barrier * 100)}%" + ("  (full size)" if sandbox_barrier >= 0.999 else ""), True, (255, 222, 95))
+        screen.blit(value, value.get_rect(center=(panel.centerx, panel.y + 240)))
+        size = smaller_button_font.render(f"{storm_survival_map_width if shrunk_map() else MAP_WIDTH} x "
+                                          f"{storm_survival_map_height if shrunk_map() else MAP_HEIGHT} pixels", True, (190, 196, 205))
+        screen.blit(size, size.get_rect(center=(panel.centerx, panel.y + 272)))
+    hint = smaller_button_font.render("Tab: close menu", True, (160, 165, 175))
+    hint_y = extra["clear"].y - 16 if "clear" in extra else panel.bottom - 30
+    screen.blit(hint, hint.get_rect(center=(panel.centerx, hint_y)))
+
+
+def set_sandbox_barrier(value):
+    global sandbox_barrier
+    sandbox_barrier = max(SANDBOX_BARRIER_MIN, min(1.0, round(value * 20) / 20))  # Steps of 5%
+    apply_sandbox_barrier()
 
 def handle_enemy_menu_event(event):
-    if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-        close_enemy_menu()
+    """Tab / Escape close it. In Spawn: pick or drag a logo from the side bar, then click / let go on the map
+    (the side bar stays open, so you can keep placing). Right-click stops placing."""
+    global sandbox_tab, sandbox_place, sandbox_spawn_list
+    if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_TAB):
+        if event.key == pygame.K_ESCAPE and sandbox_place is not None:
+            sandbox_place = None  # Escape first stops placing
+        else:
+            close_enemy_menu()
         return
-    if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1 or enemy_menu_anim < 0.9:
+    if enemy_menu_anim < 0.9:
         return  # Ignore clicks until it has finished sliding in
-    pos = pygame.mouse.get_pos()
-    _, rows, close = enemy_menu_layout()
-    if close.collidepoint(pos):
+    pos = getattr(event, "pos", None) or pygame.mouse.get_pos()
+    panel, tabs, cards, extra = enemy_menu_layout()
+    over_menu = panel.collidepoint(pos) or any(r.collidepoint(pos) for _, r in tabs) or extra["close"].collidepoint(pos)
+    if event.type == pygame.MOUSEMOTION:
+        if sandbox_tab == "Game Settings" and event.buttons[0] and extra["track"].inflate(0, 40).collidepoint(pos):
+            set_sandbox_barrier(SANDBOX_BARRIER_MIN + (pos[0] - extra["track"].x) / extra["track"].width * (1 - SANDBOX_BARRIER_MIN))
+        elif sandbox_place is not None and sandbox_place["dragging"]:
+            sx, sy = sandbox_place["start"]
+            if math.hypot(pos[0] - sx, pos[1] - sy) > 12:
+                sandbox_place["moved"] = True
+        return
+    if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+        if sandbox_place is not None and sandbox_place["dragging"]:
+            if sandbox_place["moved"] and not over_menu:
+                place_selected(pos)  # Dropped on the map
+                sandbox_place = None
+            else:
+                sandbox_place["dragging"] = False  # A click on the logo: now click the map to place it
+        return
+    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+        sandbox_place = None
+        return
+    if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+        return
+    if extra["close"].collidepoint(pos):
         close_enemy_menu()
         return
-    for kind, _, _, _, buttons in rows:
-        if buttons["add"].collidepoint(pos):
-            sandbox_add_enemy(kind)
-        elif buttons["remove"].collidepoint(pos):
-            sandbox_remove_enemy(kind)
-        elif buttons["clear"].collidepoint(pos):
-            sandbox_remove_enemy(kind, everything=True)
+    for name, rect in tabs:
+        if rect.collidepoint(pos):
+            sandbox_tab = name
+            sandbox_place = None
+            return
+    if sandbox_tab == "Spawn":
+        if extra["enemies"].collidepoint(pos) or extra["bosses"].collidepoint(pos):
+            sandbox_spawn_list = "Enemies" if extra["enemies"].collidepoint(pos) else "Bosses"
+            sandbox_place = None
+            return
+        for kind, card in cards:
+            if card.collidepoint(pos):
+                sandbox_place = {"kind": kind, "boss": sandbox_spawn_list == "Bosses", "dragging": True, "start": pos, "moved": False}
+                return
+        if extra["clear"].collidepoint(pos):
+            if sandbox_spawn_list == "Enemies":
+                sandbox_clear_enemies()
+            else:
+                globals()["active_boss"] = None
+            return
+        if not over_menu and sandbox_place is not None:
+            place_selected(pos)  # Click on the map with a logo picked
+        return
+    if extra["minus"].collidepoint(pos):
+        set_sandbox_barrier(sandbox_barrier - 0.05)
+    elif extra["plus"].collidepoint(pos):
+        set_sandbox_barrier(sandbox_barrier + 0.05)
+    elif extra["track"].inflate(0, 40).collidepoint(pos):
+        set_sandbox_barrier(SANDBOX_BARRIER_MIN + (pos[0] - extra["track"].x) / extra["track"].width * (1 - SANDBOX_BARRIER_MIN))
+
+
+def handle_sandbox_place_event(event):
+    """With the menu closed: finish a drag where the mouse stops, or click the map to place the chosen logo.
+    Right-click or Escape stops placing. Returns True if the event was used."""
+    global sandbox_place
+    if sandbox_place is None:
+        return False
+    if sandbox_place["dragging"]:
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            place_selected(event.pos)
+            sandbox_place = None
+            close_enemy_menu()
+        return event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION)
+    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        place_selected(event.pos)  # Stays selected, so you can keep clicking to place more
+        return True
+    if (event.type == pygame.MOUSEBUTTONDOWN and event.button == 3) or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+        sandbox_place = None
+        return True
+    return False
+
+def draw_sandbox_place():
+    """The chosen logo following the mouse, with a hint."""
+    if sandbox_place is None or (sandbox_place["dragging"] and not sandbox_place.get("moved")):
+        return
+    mx, my = pygame.mouse.get_pos()
+    logo = sandbox_logo(sandbox_place["kind"], sandbox_place["boss"])
+    if sandbox_place["boss"]:
+        pygame.draw.circle(screen, (255, 215, 80), (mx, my), BOSS_RADIUS, 2)  # How big the boss will be
+    ghost = logo.copy()
+    ghost.set_alpha(190)
+    screen.blit(ghost, ghost.get_rect(center=(mx, my)))
+    text = ("Let go to place it" if sandbox_place["dragging"]
+            else "Click the map to place  -  right-click or Escape to stop")
+    hint = small_button_font.render(text, True, WHITE)
+    box = hint.get_rect(midbottom=(WIDTH // 2 + 110, HEIGHT - 20)).inflate(24, 10)
+    pygame.draw.rect(screen, (20, 24, 32), box, border_radius=8)
+    screen.blit(hint, hint.get_rect(center=box.center))
+
 
 # ---- Settings ----
 settings_open = False
@@ -4950,7 +5139,8 @@ def snapshot_sandbox():
             "yellow": [(e["x"], e["y"]) for e in yellow_enemies],
             "teal": [(e["x"], e["y"]) for e in teal_enemies],
             "pink": [(e["x"], e["y"]) for e in pink_enemies],
-            "violet": [(e["x"], e["y"]) for e in violet_enemies]}
+            "violet": [(e["x"], e["y"]) for e in violet_enemies],
+            "boss": [active_boss["kind"], active_boss["x"], active_boss["y"]] if active_boss is not None else None}
 
 def retry_sandbox():
     """Retry after dying in the Sandbox: straight back into play mode with the enemies you had placed."""
@@ -4972,8 +5162,18 @@ def retry_sandbox():
     violet_enemies[:] = [new_violet_enemy(x, y) for x, y in sandbox_snapshot.get("violet", [])]
     max_red_enemies, max_green_enemies = len(red_enemies), len(green_enemies)
     max_blue_enemies, max_purple_enemies = len(blue_enemies), len(purple_enemies)
+    if sandbox_snapshot.get("boss"):
+        kind, bx, by = sandbox_snapshot["boss"]
+        sandbox_add_boss(kind, (bx, by))
     shooting_range_editor_mode = False
     shooting_range_play_mode = True
+
+def edit_sandbox():
+    """After dying: back to the editor with everything you had placed."""
+    global shooting_range_editor_mode, shooting_range_play_mode
+    retry_sandbox()
+    shooting_range_editor_mode = True
+    shooting_range_play_mode = False
 
 # ---- Multiplayer lobby (right side of the Play tab) ----
 MULTIPLAYER_SOLO_MODES = ("Sandbox", "Tutorial")  # These stay single-player
@@ -5968,7 +6168,7 @@ def get_safe_enemy_spawn():
     """A random spot inside the barrier that is off screen, so nothing appears on top of the player.
     If the play area is too small for that (late Barrier Shrink), the farthest spot found is used."""
     barrier_thickness = 12  # Must match the value used for drawing the barrier
-    if in_storm_survival:
+    if shrunk_map():
         left = MAP_WIDTH // 2 - storm_survival_map_width // 2
         top = MAP_HEIGHT // 2 - storm_survival_map_height // 2
         right, bottom = left + storm_survival_map_width, top + storm_survival_map_height
@@ -6090,7 +6290,9 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
             reset_game.block_health_initialized = True
         globals()['block_defence_game_over_timer'] = 0.0
         globals()['block_defence_points'] = 0
-    # Initialize storm survival map size
+    # Initialize storm survival map size (the Sandbox keeps its own barrier size setting)
+    if shooting_range:
+        apply_sandbox_barrier()
     if storm_survival:
         global storm_survival_map_width, storm_survival_map_height
         storm_survival_map_width = MAP_WIDTH
@@ -6253,6 +6455,13 @@ while running:
         if enemy_menu_open and not console_open and not admin_code_open and not admin_panel_open:
             handle_enemy_menu_event(event)
             continue
+        if (in_shooting_range and not in_menu and not game_over and not console_open and not admin_code_open
+                and not admin_panel_open and not pause_menu_open):
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_TAB:
+                open_enemy_menu()  # Tab opens the Sandbox menu (and stops any placing)
+                continue
+            if handle_sandbox_place_event(event):
+                continue
         if block_menu_open and not console_open and not admin_code_open and not admin_panel_open:
             handle_block_menu_event(event)
             continue
@@ -6422,8 +6631,6 @@ while running:
                 for name, rect, _, _ in game_button_rects():
                     if not rect.collidepoint(mx, my):
                         continue
-                    if name == "Add Enemies":
-                        open_enemy_menu()
                     game_paused = True
                 if in_shooting_range:
                     play_button = pygame.Rect(WIDTH - 120, HEIGHT - 60, 100, 40)
@@ -6459,7 +6666,7 @@ while running:
                 player_x = world_x - player_size // 2
                 player_y = world_y - player_size // 2
                 # Clamp to map boundaries
-                if in_storm_survival:
+                if shrunk_map():
                     # Use shrinking map boundaries for storm survival, centered on original map center
                     center_x = MAP_WIDTH // 2
                     center_y = MAP_HEIGHT // 2
@@ -6583,7 +6790,7 @@ while running:
             camera_y = player_y - HEIGHT // 2 + player_size // 2
 
         # Clamp player position to map boundaries
-        if in_storm_survival:
+        if shrunk_map():
             # Use shrinking map boundaries for storm survival, centered on original map center
             center_x = MAP_WIDTH // 2
             center_y = MAP_HEIGHT // 2
@@ -6812,7 +7019,7 @@ while running:
                 bullet["y"] += bullet["dy"]
 
                 # Check if bullet hits barrier boundaries (disabled in storm survival)
-                if not in_storm_survival:
+                if not shrunk_map():
                     barrier_thickness = 12
                     if (bullet["x"] < barrier_thickness or 
                         bullet["x"] > MAP_WIDTH - barrier_thickness - bullet_size or
@@ -7090,7 +7297,7 @@ while running:
         # Blue bullet collision detection (always active)
         for i, b in enumerate(blue_bullets):
             # Check if bullet hits barrier boundaries (disabled in storm survival)
-            if not in_storm_survival:
+            if not shrunk_map():
                 barrier_thickness = 12
                 hit_x = b["x"] < barrier_thickness or b["x"] > MAP_WIDTH - barrier_thickness - shot_size(b)
                 hit_y = b["y"] < barrier_thickness or b["y"] > MAP_HEIGHT - barrier_thickness - shot_size(b)
@@ -7588,13 +7795,19 @@ while running:
                 screen.blit(menu_text, (menu_button.x + (button_width - menu_text.get_width()) // 2, menu_button.y + (button_height - menu_text.get_height()) // 2))
             else:
                 # For other modes: Retry, Skins, Upgrades, and Menu buttons
+                shift = 85 if in_shooting_range else 0  # The Sandbox fits an Edit button in the middle
                 retry_text = button_font.render("Retry", True, BLACK)
-                retry_button = pygame.Rect(WIDTH // 2 - 170, HEIGHT // 2 + 40 + button_offset, 150, 60)
+                retry_button = pygame.Rect(WIDTH // 2 - 170 - shift, HEIGHT // 2 + 40 + button_offset, 150, 60)
                 draw_button(retry_button, BLUE)
                 screen.blit(retry_text, retry_text.get_rect(center=retry_button.center))
+                edit_button = pygame.Rect(WIDTH // 2 - 75, HEIGHT // 2 + 40 + button_offset, 150, 60)
+                if in_shooting_range:
+                    draw_button(edit_button, GREEN)
+                    edit_text = button_font.render("Edit", True, BLACK)
+                    screen.blit(edit_text, edit_text.get_rect(center=edit_button.center))
 
                 menu_text = button_font.render("Menu", True, BLACK)
-                menu_button = pygame.Rect(WIDTH // 2 + 20, HEIGHT // 2 + 40 + button_offset, 150, 60)
+                menu_button = pygame.Rect(WIDTH // 2 + 20 + shift, HEIGHT // 2 + 40 + button_offset, 150, 60)
                 draw_button(menu_button, BLUE)
                 screen.blit(menu_text, menu_text.get_rect(center=menu_button.center))
 
@@ -7627,6 +7840,8 @@ while running:
                             else:
                                 reset_game(tutorial=in_tutorial)  # Retrying the tutorial restarts the tutorial
                                 checkpoint_wave = 1
+                    if in_shooting_range and edit_button.collidepoint(mx, my):
+                        edit_sandbox()  # Back to the editor with the enemies you placed
                     if menu_button.collidepoint(mx, my):
                         exit_to_main_menu()  # Leaves the mode properly (puts Sandbox coins back)
 
@@ -7915,6 +8130,8 @@ while running:
     enemy_menu_anim += ((1.0 if enemy_menu_open else 0.0) - enemy_menu_anim) * min(1.0, dt * 12)
     if enemy_menu_anim > 0.02:
         draw_enemy_menu()
+    if in_shooting_range and not start_screen and not hub_open:
+        draw_sandbox_place()
 
     # Pause menu, sliding down from the top
     pause_menu_anim += ((1.0 if pause_menu_open else 0.0) - pause_menu_anim) * min(1.0, dt * 12)
