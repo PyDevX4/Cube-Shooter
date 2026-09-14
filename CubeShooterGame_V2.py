@@ -3368,7 +3368,7 @@ BLUE_BOSS_SHIELD_MINIONS = [{"blue": 15}, {"blue": 10, "red": 30}, {"blue": 15, 
 BLUE_BOSS_GUN_LENGTH = BOSS_RADIUS + 72
 # (turn speed, seconds between shots) for each stage: before 50, 50-25, below 25 (Gun V fire rate, slow turn)
 BLUE_BOSS_STAGES = [(math.radians(70), 0.8 / 1.5), (math.radians(125), 0.4 / 1.5), (math.radians(70), 0.4 / 1.5)]  # (old turn speed, seconds between shots)
-BLUE_BOSS_AIM_TURN = math.radians(260)   # How fast his gun swings round to keep facing the player
+BLUE_BOSS_AIM_TURN = math.radians(55)    # His gun swings after you slowly: circle him close enough and he can't keep up
 BLUE_BOSS_TRIPLE_SPREAD = 0.3            # Below 25 he fires 3 at once, like the Triple Bullet ability
 # Red and Green Boss: the enemies they call in at 75, 50 and 25 health (once each)
 RED_GREEN_BOSS_WAVES = {"red": {75: {"red": 25}, 50: {"red": 25}, 25: {"red": 25}},
