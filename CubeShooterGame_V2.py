@@ -3569,8 +3569,8 @@ def pink_boss_visible(boss):
     return boss["phase"] not in ("gone",)
 
 def draw_pink_dash_path(boss, cx, cy):
-    """His path: a chain of glowing pink diamonds racing out toward where he'll stop, and a spinning
-    crosshair ring where he lands - different from the Green Boss's filled lane."""
+    """His warning (nothing like the Green Boss's lane): a crackling pink lightning bolt to where he'll land,
+    hollow afterimages of him popping in along it one by one, and a spinning diamond closing in on the landing spot."""
     tx, ty = boss["target"]
     ex, ey = tx - camera_x, ty - camera_y
     charge = 1 - max(0.0, boss["timer"]) / PINK_BOSS_AIM_TIME
@@ -3579,34 +3579,44 @@ def draw_pink_dash_path(boss, cx, cy):
     if length < 1:
         return
     ux, uy = (ex - cx) / length, (ey - cy) / length
-    layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     nx, ny = -uy, ux
-    for side in (-1, 1):  # Dashed edges showing how wide he is: anything between them gets hit
-        ox, oy = nx * BOSS_RADIUS * side, ny * BOSS_RADIUS * side
-        for k in range(int(length // 40) + 1):
-            d0, d1 = k * 40, min(length, k * 40 + 22)
-            pygame.draw.line(layer, (255, 200, 235, int(120 + 110 * charge)),
-                             (cx + ux * d0 + ox, cy + uy * d0 + oy), (cx + ux * d1 + ox, cy + uy * d1 + oy), 4)
-    spacing = 70
-    lit_to = length * min(1.0, charge * 1.4)  # The chevrons light up from him outward
-    for k in range(int(length // spacing) + 1):
-        d = (k * spacing + now * 320) % (length + 1)
-        x, y = cx + ux * d, cy + uy * d
-        if not (-60 < x < WIDTH + 60 and -60 < y < HEIGHT + 60):
+    layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    glow = pygame.Surface((WIDTH, HEIGHT))  # Added on top (brightens toward pink instead of greying the grass)
+    # Afterimages of him along the way, appearing one after another as the dash gets closer
+    echoes = 5
+    for k in range(1, echoes + 1):
+        if charge < k / (echoes + 1):
             continue
-        lit = d <= lit_to
-        size = 26 if lit else 18
-        color = (255, 120, 200, 245) if lit else (255, 190, 230, 150)
-        tip = (x + ux * size * 0.6, y + uy * size * 0.6)
-        pygame.draw.lines(layer, color, False, [(x - ux * size * 0.4 + nx * size, y - uy * size * 0.4 + ny * size), tip,
-                                                  (x - ux * size * 0.4 - nx * size, y - uy * size * 0.4 - ny * size)], 7)
-    ring = BOSS_RADIUS * (1.25 - 0.25 * charge)
-    pygame.draw.circle(layer, (255, 150, 215, int(60 + 80 * charge)), (ex, ey), BOSS_RADIUS)
-    pygame.draw.circle(layer, (255, 235, 248, 240), (ex, ey), ring, 5)
-    for k in range(4):  # Spinning crosshair ticks
-        a = now * 4 + k * math.pi / 2
-        pygame.draw.line(layer, (255, 235, 248, 240), (ex + math.cos(a) * (ring - 18), ey + math.sin(a) * (ring - 18)),
-                         (ex + math.cos(a) * (ring + 18), ey + math.sin(a) * (ring + 18)), 6)
+        d = length * k / (echoes + 1)
+        x, y = cx + ux * d, cy + uy * d
+        pygame.draw.circle(glow, (70, 10, 45), (x, y), BOSS_RADIUS)
+        pygame.draw.circle(layer, (255, 200, 235, 200), (x, y), BOSS_RADIUS, 3)
+        for j in range(4):  # Sparkles on each afterimage
+            a = now * 3 + k + j * math.pi / 2
+            sx, sy = x + math.cos(a) * BOSS_RADIUS * 0.7, y + math.sin(a) * BOSS_RADIUS * 0.7
+            pygame.draw.line(layer, (255, 245, 250, 230), (sx - 6, sy), (sx + 6, sy), 2)
+            pygame.draw.line(layer, (255, 245, 250, 230), (sx, sy - 6), (sx, sy + 6), 2)
+    # Crackling lightning bolt, re-drawn a few times a second so it flickers
+    rng = random.Random(int(now * 18))
+    segments = max(4, int(length // 55))
+    points = [(cx, cy)]
+    for k in range(1, segments):
+        d = length * k / segments
+        jag = rng.uniform(-28, 28)
+        points.append((cx + ux * d + nx * jag, cy + uy * d + ny * jag))
+    points.append((ex, ey))
+    pygame.draw.lines(glow, (160, 30, 110), False, points, 18)
+    pygame.draw.lines(layer, (255, 60, 170, int(150 + 100 * charge)), False, points, 9)
+    pygame.draw.lines(layer, (255, 235, 248, 255), False, points, 3)
+    # Spinning diamond at the landing spot, shrinking down to his size
+    size = BOSS_RADIUS * (2.2 - 1.2 * charge)
+    spin = now * 2.5
+    diamond = [(ex + math.cos(spin + k * math.pi / 2) * size, ey + math.sin(spin + k * math.pi / 2) * size) for k in range(4)]
+    pygame.draw.polygon(glow, (int(60 + 90 * charge), int(8 + 12 * charge), int(40 + 60 * charge)), diamond)
+    pygame.draw.polygon(layer, (255, 235, 248, 250), diamond, 5)
+    inner = [(ex + (x - ex) * 0.55, ey + (y - ey) * 0.55) for x, y in diamond]
+    pygame.draw.polygon(layer, (255, 150, 215, 220), inner, 3)
+    screen.blit(glow, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
     screen.blit(layer, (0, 0))
 def boss_dash_length(boss):
     """How far the dash can go before the boss would hit the barrier."""
