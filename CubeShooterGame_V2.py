@@ -1923,7 +1923,7 @@ def purple_boss_break_orbs():
         for _ in range(4):
             spawn_death_effect(ox + random.uniform(-15, 15), oy + random.uniform(-15, 15), "purple")
     boss["orbs"] = []
-    boss["shielded"] = boss["tethered"]
+    boss["shielded"] = boss["tethered"] or boss.get("guarded", False)
     boss["ripple"] = 0.4
     console_message, console_message_timer = "Purple Boss orbs broken", 2.5
     return True
@@ -1977,11 +1977,11 @@ def set_boss_health(kind, health):
         for orb in boss["orbs"]:
             spawn_death_effect(*purple_boss_orb_position(boss, orb), "purple")
         boss["orbs"] = []  # Skip straight past the orbs
-        boss["tethered"] = False
+        boss["tethered"] = boss["guarded"] = False
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         if health in (75, 50, 25):
             purple_boss_event(boss, health)  # Landing right on 75/50/25 starts that part of the fight
-        boss["shielded"] = boss["tethered"]
+        boss["shielded"] = boss["tethered"] or boss["guarded"]
     if kind == "blue":
         boss["shielded"] = False
         boss["shields_used"] = sum(1 for at in BLUE_BOSS_SHIELD_AT if at > health)
@@ -3482,7 +3482,10 @@ def update_purple_boss(boss, dt):
         orb["flash"] = max(0.0, orb["flash"] - dt)
     if boss["tethered"] and not purple_enemies:
         boss["tethered"] = False
-    boss["shielded"] = bool(boss["orbs"]) or boss["tethered"]
+    if boss.get("guarded") and not any_enemies_alive():
+        boss["guarded"] = False  # Everything he called in is dead: the shield drops
+        boss["ripple"] = 0.4
+    boss["shielded"] = bool(boss["orbs"]) or boss["tethered"] or boss.get("guarded", False)
     if not boss["shielded"]:  # He never moves; whenever he can be hit, a red appears every 2 seconds (up to 30)
         boss["red_timer"] = boss.get("red_timer", 0.0) + dt
         if boss["red_timer"] >= PURPLE_BOSS_RED_EVERY:
@@ -3531,14 +3534,16 @@ def spawn_tied_purples(boss):
         update_purple_minis(len(purple_enemies) - 1)
 
 def purple_boss_event(boss, at):
-    """At 75: 20 blue, 30 red, 15 green. At 50 and 25: everything left dies, then the same again plus 10 purples tied to him."""
+    """At 75, 50 and 25: everything left dies, he shields up and calls in his wave (at 50 and 25 also 10 purples tied
+    to him). He can't be hurt until every one of those enemies is dead."""
     boss["events_done"].append(at)
+    kill_all_enemies_no_coins()
     if at in (50, 25):
-        kill_all_enemies_no_coins()
         spawn_tied_purples(boss)
         boss["tethered"] = True
-        boss["shielded"] = True
-        boss["ripple"] = 0.4
+    boss["guarded"] = True
+    boss["shielded"] = True
+    boss["ripple"] = 0.4
     spawn_minions(PURPLE_BOSS_WAVE)
 
 def purple_boss_take_bullet(boss, bullet):
@@ -3563,7 +3568,7 @@ def purple_boss_take_bullet(boss, bullet):
                     chosen = random.choice(still_shielded)  # A random orb loses its shield
                     chosen["shielded"] = False
                     chosen["ripple"] = 0.4
-                boss["shielded"] = bool(boss["orbs"]) or boss["tethered"]
+                boss["shielded"] = bool(boss["orbs"]) or boss["tethered"] or boss.get("guarded", False)
             return True
     if math.hypot(bx - boss["x"], by - boss["y"]) < BOSS_RADIUS:
         hurt_boss(1)
@@ -4554,8 +4559,9 @@ def draw_boss_health():
     elif active_boss["kind"] == "purple" and active_boss["orbs"]:
         left = len(active_boss["orbs"])
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"Break the orbs! ({left} left)")
-    elif active_boss["kind"] == "purple" and active_boss["tethered"]:
-        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"Kill the tied purples! ({len(purple_enemies)} left)")
+    elif active_boss["kind"] == "purple" and (active_boss["tethered"] or active_boss.get("guarded")):
+        left = len(red_enemies) + len(green_enemies) + len(blue_enemies) + len(purple_enemies)
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - kill all the enemies! ({left} left)")
     elif active_boss.get("shielded"):
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - kill the blues!")
     else:
