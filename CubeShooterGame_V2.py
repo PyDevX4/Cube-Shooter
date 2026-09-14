@@ -1944,20 +1944,25 @@ def set_boss_health(kind, health):
     boss["enraged"] = health <= BOSS_HEALTH // 2
     boss["waves_done"] = [at for at in (75, 50, 25) if at > health]  # Red/Green: skipped-past spawns don't happen
     if kind == "teal":
-        boss["events_done"] = [at for at in (175, 150, 125) if at > health]
+        boss["events_done"] = [at for at in (175, 150, 125, 100) if at > health]
         boss["shielded"] = False
-        if boss["phase"] in ("swarm", "guard", "throw"):
+        boss["ghost_swarm"] = False
+        if boss["phase"] in ("swarm", "guard", "throw", "vanish", "reappear", "rings", "nuke"):
             boss["phase"], boss["timer"] = "hidden", TEAL_BOSS_VANISH_WAIT
         if health < 150:
             # Below 150 he stays in the middle throwing teals
             boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
             boss["phase"], boss["timer"] = "throw", 0.6
+        if health < 100:
+            boss["phase"], boss["timer"], boss["rings_done"] = "rings", 0.5, 0  # Below 100: the ring attacks
         if health == 175:
             teal_boss_start_guard(boss)
         elif health == 150:
             teal_boss_start_swarm(boss)
         elif health == 125:
             teal_boss_start_guard(boss, 125)
+        elif health == 100:
+            teal_boss_start_vanish(boss)
     if kind == "yellow":
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         boss["event"], boss["shielded"], boss["arms"] = None, False, None
@@ -2834,6 +2839,14 @@ def draw_teal_enemies():
             continue
         if enemy["fuse"] is None:
             alpha = TEAL_HIDDEN_ALPHA
+        elif enemy.get("ghost"):
+            alpha = TEAL_GHOST_ALPHA  # 95% invisible: only a faint shimmer (and a faint blast circle)
+            charge = min(1.0, enemy["fuse"] / enemy.get("fuse_len", TEAL_FUSE))
+            ring = pygame.Surface((TEAL_BLAST_RADIUS * 2 + 20, TEAL_BLAST_RADIUS * 2 + 20), pygame.SRCALPHA)
+            c = TEAL_BLAST_RADIUS + 10
+            pygame.draw.circle(ring, (60, 255, 230, int(10 + 18 * charge)), (c, c), TEAL_BLAST_RADIUS)
+            pygame.draw.circle(ring, (180, 255, 245, int(25 + 45 * charge)), (c, c), TEAL_BLAST_RADIUS, 2)
+            screen.blit(ring, (cx - c, cy - c))
         else:
             alpha = 255 if math.sin(enemy["blink_phase"] * 2 * math.pi) > 0 else 20  # Flashing visible / invisible
             charge = min(1.0, enemy["fuse"] / enemy.get("fuse_len", TEAL_FUSE))
@@ -3324,6 +3337,20 @@ TEAL_BOSS_THROW_COUNT = 3        # ...this many at a time...
 TEAL_BOSS_THROW_SCATTER = 170    # ...each aimed at a random spot within this far of the player
 TEAL_THROWN_SPEED = 900          # Pixels per second a thrown teal flies (straight, no curve)
 TEAL_BOSS_SPAWN_AT_125 = {"orange": 30, "green": 20}
+TEAL_BOSS_THROW_BLUES = 25        # Each time he starts throwing (after 150 and after 125), 25 blues come in once
+TEAL_BOSS_THROW_COUNT_125 = 5     # Below 125 he throws 5 at a time
+TEAL_BOSS_VANISH_100 = 3.0        # At 100 he vanishes; the ghost swarm starts this long after
+TEAL_GHOST_ROUNDS = 30            # The ghost swarm: 30 rounds...
+TEAL_GHOST_SPEED = 1.5            # ...1.5 times faster than the 150 swarm...
+TEAL_GHOST_ALPHA = 13             # ...and the teals are 95% invisible
+TEAL_BOSS_REAPPEAR_WAIT = 3.0     # Then he's back in the middle, waiting this long
+TEAL_RINGS_PER_BLAST = 10         # Ring attacks before each big blast
+TEAL_RING_RADII = (230, 380, 530) # Each ring attack: teals in rings this far from him...
+TEAL_RING_SPACING = 95            # ...one every this many pixels around each ring
+TEAL_RING_FUSE = 1.0              # ...exploding after 1 second
+TEAL_RING_GAP = 0.6               # Pause between ring attacks (after the last one has exploded)
+TEAL_NUKE_WARNING = 3.0           # The big blast: 3 seconds of warning...
+TEAL_NUKE_RADIUS = int(math.sqrt(0.5 * MAP_WIDTH * MAP_HEIGHT / math.pi))  # ...and it covers half of the map
 ORANGE_BOSS_GUN_LENGTH = BOSS_RADIUS + 60
 ORANGE_BOSS_BEAM_WIDTH = 16
 ORANGE_BOSS_STAGES = {
@@ -3755,6 +3782,13 @@ def update_teal_boss(boss, dt):
             teal_boss_throw(boss)
             boss["timer"] = TEAL_BOSS_THROW_EVERY
         return
+    if boss["phase"] == "vanish":
+        if boss["timer"] <= 0:  # 3 seconds after vanishing at 100: the ghost swarm
+            boss["phase"], boss["timer"], boss["swarm_round"], boss["ghost_swarm"] = "swarm", 0.0, 0, True
+        return
+    if boss["phase"] in ("reappear", "rings", "nuke"):
+        update_teal_rings(boss, dt)
+        return
     if boss["phase"] == "guard":
         # Shielded in the middle until every enemy is dead. After 175: 50 more teals and back to teleporting.
         # After 125: back to throwing teals.
@@ -3764,7 +3798,7 @@ def update_teal_boss(boss, dt):
                 spawn_minions_any({"teal": TEAL_BOSS_TEALS})
                 boss["phase"], boss["timer"] = "hidden", TEAL_BOSS_VANISH_WAIT
             else:
-                boss["phase"], boss["timer"] = "throw", 0.6
+                teal_boss_begin_throwing(boss)
         return
     if boss["phase"] == "start":
         if boss["timer"] <= 0:
@@ -3798,7 +3832,7 @@ def teal_boss_explode(boss):
 
 def teal_boss_visible(boss):
     """Whether he can be seen (and shot). Fading away after a hit doesn't count."""
-    return boss["phase"] in ("start", "fuse", "swarm", "guard", "throw")
+    return boss["phase"] in ("start", "fuse", "swarm", "guard", "throw", "reappear", "rings", "nuke") and not boss.get("ghost_swarm")
 
 def any_enemies_alive():
     return bool(red_enemies or green_enemies or blue_enemies or purple_enemies or orange_enemies or yellow_enemies
@@ -3816,13 +3850,77 @@ def teal_boss_start_guard(boss, at=175):
     boss["shielded"], boss["ripple"] = True, 0.4
     spawn_minions_any(TEAL_BOSS_SPAWN_AT_175 if at == 175 else TEAL_BOSS_SPAWN_AT_125)
 
+def teal_boss_begin_throwing(boss):
+    """Start (or go back to) throwing teals from the middle; 25 blues come in once each time."""
+    boss["phase"], boss["timer"] = "throw", 0.6
+    spawn_minions_any({"blue": TEAL_BOSS_THROW_BLUES})
+
+def teal_boss_start_vanish(boss):
+    """At 100: he vanishes (can't be seen or hit); 3 seconds later the ghost swarm starts."""
+    boss["events_done"].append(100)
+    boss["health"] = 100
+    effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.5, "color": (80, 255, 235), "size": 3.5})
+    boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
+    boss["phase"], boss["timer"] = "vanish", TEAL_BOSS_VANISH_100
+    boss["shielded"] = False
+
+def teal_ring_attack(boss):
+    """Rings of teals around him, already flashing, all exploding after 1 second."""
+    half = player_size / 2
+    offset = random.uniform(0, 2 * math.pi)
+    for radius in TEAL_RING_RADII:
+        count = max(6, int(2 * math.pi * radius / TEAL_RING_SPACING))
+        for k in range(count):
+            a = offset + k * 2 * math.pi / count + radius  # Each ring turned a bit differently
+            x = max(12, min(MAP_WIDTH - player_size - 12, boss["x"] + math.cos(a) * radius - half))
+            y = max(12, min(MAP_HEIGHT - player_size - 12, boss["y"] + math.sin(a) * radius - half))
+            teal = new_teal_enemy(x, y)
+            teal.update({"fuse": 0.0, "fuse_len": TEAL_RING_FUSE, "swarm": True, "ring": True})
+            teal_enemies.append(teal)
+
+def teal_boss_nuke(boss):
+    """The big blast: everyone within half the map of him dies."""
+    sounds.play("teal_explode")
+    effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.9, "color": (80, 255, 235),
+                    "size": TEAL_NUKE_RADIUS / 40})
+    for _ in range(14):
+        a = random.uniform(0, 2 * math.pi)
+        r = random.uniform(0, TEAL_NUKE_RADIUS * 0.8)
+        spawn_death_effect(boss["x"] + math.cos(a) * r, boss["y"] + math.sin(a) * r, "teal")
+    px, py = player_x + player_size / 2, player_y + player_size / 2
+    if not game_over and not player_safe() and math.hypot(px - boss["x"], py - boss["y"]) < TEAL_NUKE_RADIUS:
+        player_hit()
+
+def update_teal_rings(boss, dt):
+    """10 ring attacks (each once the last has exploded), then a 3 second warning and the big blast. Repeats."""
+    if boss["phase"] == "reappear":
+        if boss["timer"] <= 0:
+            boss["phase"], boss["timer"], boss["rings_done"] = "rings", 0.0, 0
+        return
+    if boss["phase"] == "nuke":
+        if boss["timer"] <= 0:
+            teal_boss_nuke(boss)
+            boss["phase"], boss["timer"], boss["rings_done"] = "rings", 1.0, 0
+        return
+    if any(e.get("ring") for e in teal_enemies):
+        boss["timer"] = TEAL_RING_GAP  # Wait for this attack to finish exploding
+        return
+    if boss["timer"] > 0:
+        return
+    if boss["rings_done"] >= TEAL_RINGS_PER_BLAST:
+        boss["phase"], boss["timer"] = "nuke", TEAL_NUKE_WARNING
+        return
+    boss["rings_done"] += 1
+    teal_ring_attack(boss)
+    boss["timer"] = TEAL_RING_GAP
+
 def teal_boss_fuse(boss):
     return TEAL_BOSS_FUSE
 
 def teal_boss_throw(boss):
     """Throw 3 teals, already ticking, each flying straight to a random spot scattered around the player."""
     half = player_size / 2
-    for _ in range(TEAL_BOSS_THROW_COUNT):
+    for _ in range(TEAL_BOSS_THROW_COUNT_125 if boss["health"] <= 125 else TEAL_BOSS_THROW_COUNT):
         victim_x, victim_y = random.choice(living_players())  # Each teal lands near one of the players
         px, py = victim_x + half, victim_y + half
         a = random.uniform(0, 2 * math.pi)
@@ -3844,14 +3942,22 @@ def teal_boss_start_swarm(boss):
 
 def update_teal_swarm(boss, dt):
     if any(e.get("swarm") for e in teal_enemies):
-        boss["timer"] = TEAL_SWARM_GAP  # The breather starts once this round has all exploded
+        boss["timer"] = TEAL_SWARM_GAP / (TEAL_GHOST_SPEED if boss.get("ghost_swarm") else 1)  # The breather starts once this round has all exploded
         return
     if boss["timer"] > 0:
         return
-    if boss["swarm_round"] >= TEAL_SWARM_ROUNDS:
+    ghost = boss.get("ghost_swarm", False)
+    if boss["swarm_round"] >= (TEAL_GHOST_ROUNDS if ghost else TEAL_SWARM_ROUNDS):
+        if ghost:
+            # The ghost swarm is over: he reappears in the middle and waits before the ring attacks
+            boss["ghost_swarm"] = False
+            boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
+            boss["phase"], boss["timer"] = "reappear", TEAL_BOSS_REAPPEAR_WAIT
+            effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.5, "color": (80, 255, 235), "size": 3.5})
+            return
         # All rounds done: shield drops, and he stays in the middle throwing teals at the player
         boss["shielded"], boss["ripple"] = False, 0.4
-        boss["phase"], boss["timer"] = "throw", 0.6
+        teal_boss_begin_throwing(boss)
         return
     boss["swarm_round"] += 1
     barrier = 12
@@ -3859,9 +3965,9 @@ def update_teal_swarm(boss, dt):
         x = random.uniform(barrier, MAP_WIDTH - player_size - barrier)
         y = random.uniform(barrier, MAP_HEIGHT - player_size - barrier)
         teal = new_teal_enemy(x, y)
-        teal.update({"fuse": 0.0, "fuse_len": TEAL_SWARM_FUSE, "swarm": True})
+        teal.update({"fuse": 0.0, "fuse_len": TEAL_SWARM_FUSE / (TEAL_GHOST_SPEED if ghost else 1), "swarm": True, "ghost": ghost})
         teal_enemies.append(teal)
-    boss["timer"] = TEAL_SWARM_GAP
+    boss["timer"] = TEAL_SWARM_GAP / (TEAL_GHOST_SPEED if ghost else 1)
 
 def orange_boss_stage_for(health):
     return 1 if health > 75 else 2 if health > 50 else 3 if health > 25 else 4
@@ -4118,6 +4224,8 @@ def hurt_boss(amount=1, force=False):
             teal_boss_start_swarm(boss)
         elif boss["health"] <= 125 and 125 not in boss["events_done"] and boss["health"] > 0:
             teal_boss_start_guard(boss, 125)
+        elif boss["health"] <= 100 and 100 not in boss["events_done"] and boss["health"] > 0:
+            teal_boss_start_vanish(boss)
         amount = 0
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
@@ -4474,6 +4582,17 @@ def draw_purple_boss_parts(boss, cx, cy):
 def draw_teal_boss(boss):
     """Invisible while hiding; flashing on and off (faster and faster) with his blast circle closing in during the fuse."""
     cx, cy = boss["x"] - camera_x, boss["y"] - camera_y
+    if boss["phase"] == "nuke":
+        # 3 second warning for the big blast: half the map lights up, filling in as it gets closer
+        progress = 1 - max(0.0, boss["timer"]) / TEAL_NUKE_WARNING
+        area = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 90)
+        pygame.draw.circle(area, (60, 255, 230, int(50 + 80 * progress + 30 * pulse * progress)), (cx, cy), TEAL_NUKE_RADIUS)
+        pygame.draw.circle(area, (200, 255, 250, 230), (cx, cy), TEAL_NUKE_RADIUS, 6)
+        pygame.draw.circle(area, (200, 255, 250, 160), (cx, cy), max(8, TEAL_NUKE_RADIUS * (1 - progress)), 4)  # Closing in
+        screen.blit(area, (0, 0))
+        warn = get_bubble_text(f"GET OUT!  {max(0.0, boss['timer']):.1f}", 54, (210, 255, 250), (30, 190, 175), outline=6)
+        screen.blit(warn, warn.get_rect(center=(WIDTH // 2, 150)))
     if not teal_boss_visible(boss):
         return
     visible = True
