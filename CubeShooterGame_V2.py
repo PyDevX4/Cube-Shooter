@@ -4791,6 +4791,89 @@ join_code_text = ""
 join_code_focused = False
 net_sent_settings = None      # (mode, map) the host last told the lobby
 
+# Other players in the match: where they are (smoothed between updates), their skin, and their shots
+remote_players = {}           # name -> {"x", "y", "a", "skin", "dead", "from_x", "from_y", "to_x", "to_y", "since"}
+remote_bullets = []           # Other players' shots, flying on this screen
+NET_SEND_EVERY = 0.05         # 20 updates a second
+net_send_timer = 0.0
+
+def reset_remote_players():
+    remote_players.clear()
+    remote_bullets.clear()
+
+def in_multiplayer_game():
+    return multiplayer_match and not (start_screen or hub_open or login_screen_open)
+
+def send_player_state(dt):
+    """Tell the others where we are, where we aim, our skin, and any shots fired since the last update."""
+    global net_send_timer
+    net_send_timer -= dt
+    if net_send_timer > 0:
+        return
+    net_send_timer = NET_SEND_EVERY
+    shots = []
+    for bullet in bullets:
+        if not bullet.get("sent"):
+            bullet["sent"] = True
+            shots.append([round(bullet["x"], 1), round(bullet["y"], 1), round(bullet["dx"], 2), round(bullet["dy"], 2)])
+    net.relay({"k": "p", "x": round(player_x, 1), "y": round(player_y, 1), "a": round(last_rot_angle, 3),
+               "s": current_skin, "d": bool(game_over), "b": shots})
+
+def receive_player_state(name, data):
+    now = time.monotonic()
+    player = remote_players.get(name)
+    x, y = float(data.get("x", 0)), float(data.get("y", 0))
+    if player is None:
+        player = remote_players[name] = {"x": x, "y": y, "from_x": x, "from_y": y}
+    else:
+        player["from_x"], player["from_y"] = player["x"], player["y"]  # Glide on from wherever it's drawn now
+    player.update({"to_x": x, "to_y": y, "since": now, "a": float(data.get("a", 0)),
+                   "skin": str(data.get("s", "white")), "dead": bool(data.get("d"))})
+    for shot in data.get("b", [])[:20]:
+        bx, by, dx, dy = (float(v) for v in shot[:4])
+        remote_bullets.append({"x": bx, "y": by, "dx": dx, "dy": dy, "age": 0})
+
+def update_remote_players():
+    """Smooth each other player toward their latest position, and move their shots along."""
+    now = time.monotonic()
+    names = set(net.lobby["players"]) if net.lobby else set()
+    for name in list(remote_players):
+        if name not in names:
+            del remote_players[name]  # Left the lobby
+            continue
+        player = remote_players[name]
+        k = min(1.0, (now - player["since"]) / (NET_SEND_EVERY * 1.2))
+        player["x"] = player["from_x"] + (player["to_x"] - player["from_x"]) * k
+        player["y"] = player["from_y"] + (player["to_y"] - player["from_y"]) * k
+    for shot in remote_bullets:
+        shot["x"] += shot["dx"]
+        shot["y"] += shot["dy"]
+        shot["age"] += 1
+    remote_bullets[:] = [s for s in remote_bullets if s["age"] < 150]
+
+def draw_remote_players():
+    for name, player in remote_players.items():
+        if player.get("dead"):
+            continue
+        skin = player.get("skin", "white")
+        if skin == "rainbow":
+            color = rainbow_color_cycle(pygame.time.get_ticks() / 1000.0, 2.0)
+        else:
+            color = skin_colors.get(skin, WHITE)
+        face = SKIN_TEXTURES.get(skin, color)
+        sx, sy = player["x"] - camera_x, player["y"] - camera_y
+        if not on_screen(sx + player_size / 2, sy + player_size / 2, 120):
+            continue
+        draw_player_cube(sx, sy, face, SKIN_GLOWS.get(skin, color), player.get("a", 0))
+        tag = smaller_button_font.render(name, True, WHITE)
+        box = tag.get_rect(midbottom=(sx + player_size / 2, sy - 10)).inflate(12, 4)
+        pygame.draw.rect(screen, (20, 24, 32), box, border_radius=6)
+        screen.blit(tag, tag.get_rect(center=box.center))
+
+def draw_remote_bullets():
+    for shot in remote_bullets:
+        draw_laser("player", shot["x"] - camera_x + bullet_size / 2, shot["y"] - camera_y + bullet_size / 2, shot["dx"], shot["dy"])
+
 def lobby_panel():
     left = PLAY_CENTER_X + 300
     return pygame.Rect(left, HUB_VIEWPORT.y + 20, WIDTH - 30 - left, 470)
@@ -4839,16 +4922,26 @@ def update_multiplayer():
         kind = msg.get("t")
         if kind == "welcome" and play_multiplayer and not net.lobby:
             net.create_lobby()  # Pressing Multiplayer opens your own lobby straight away
+        elif kind == "relay":
+            data = msg.get("d")
+            if isinstance(data, dict) and data.get("k") == "p" and multiplayer_match:
+                try:
+                    receive_player_state(str(msg.get("from")), data)
+                except (TypeError, ValueError):
+                    pass  # A garbled update: skip it
         elif kind == "start":
+            reset_remote_players()
             selected_mode = msg.get("mode", selected_mode)
             if msg.get("map") in MAP_NAMES:
                 selected_map = msg["map"]
             start_selected_mode()
             multiplayer_match = True
-        elif kind == "end":
+        elif kind in ("end", "disconnected"):
             multiplayer_match = False
-        elif kind == "disconnected":
-            multiplayer_match = False
+            reset_remote_players()
+    if in_multiplayer_game():
+        send_player_state(globals().get("dt", 1 / 60))
+        update_remote_players()
     lobby = net.lobby
     if not play_multiplayer or lobby is None:
         return
@@ -6546,6 +6639,8 @@ while running:
             player_face = player_color
         if not game_over:  # On the frame the player dies they shatter instead (see the death snapshot further down)
             draw_player_cube(player_x - camera_x, player_y - camera_y, player_face, SKIN_GLOWS.get(current_skin, player_color), last_rot_angle)
+        if multiplayer_match:
+            draw_remote_players()
         
         # Draw Block Defence block
         if in_block_defence:
@@ -6652,6 +6747,8 @@ while running:
         # Drawn before the enemies so a freshly fired bolt comes out from under its shooter.
         for bullet in bullets:
             draw_laser("player", bullet["x"] - camera_x + bullet_size / 2, bullet["y"] - camera_y + bullet_size / 2, bullet["dx"], bullet["dy"])
+        if multiplayer_match:
+            draw_remote_bullets()
         for b in blue_bullets:
             if b.get("orb"):
                 ox, oy = b["x"] - camera_x + shot_size(b) / 2, b["y"] - camera_y + shot_size(b) / 2
