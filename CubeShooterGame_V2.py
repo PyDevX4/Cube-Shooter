@@ -1454,6 +1454,12 @@ def magnet_level():
     return sum(bool(globals()[f"has_magnet_{n}"]) for n in range(1, 6))
 
 best_wave = 0
+# ---- Waves checkpoints and saved games ----
+checkpoints_on = False    # Waves setting: die -> Retry starts at your last checkpoint (after each boss)
+checkpoint_wave = 1       # The wave Retry / a loaded save starts at
+saved_games = []          # Newest first: {"wave": wave you were on, "checkpoint": wave it loads at, "date"}
+MAX_SAVED_GAMES = 5
+save_confirm_open = False
 # Online accounts (Supabase) work on every computer. Tests that point the game at a scratch save file stay offline.
 ONLINE_ACCOUNTS = bool(os.environ.get("CUBE_SHOOTER_ONLINE")) or "CUBE_SHOOTER_SAVE" not in os.environ
 online_session = None  # cube_online.Session while logged in to an online account
@@ -1487,6 +1493,8 @@ def progress_state():
         "equipped_ability": main_game_equipped_ability,
         "best_wave": best_wave,
         "map": selected_map,
+        "checkpoints": checkpoints_on,
+        "saved_games": [dict(s) for s in saved_games],
     }
 
 def apply_progress(progress):
@@ -1507,6 +1515,9 @@ def apply_progress(progress):
     g["shot_delay"] = g["main_game_shot_delay"] = GUN_SHOT_DELAYS[gun_level()]
     g["best_wave"] = int(progress.get("best_wave", 0))
     g["selected_map"] = progress.get("map") if progress.get("map") in MAP_NAMES else "Grass"
+    g["checkpoints_on"] = bool(progress.get("checkpoints", False))
+    g["saved_games"] = [{"wave": int(s["wave"]), "checkpoint": int(s["checkpoint"]), "date": str(s.get("date", ""))}
+                        for s in progress.get("saved_games", []) if isinstance(s, dict) and "wave" in s][:MAX_SAVED_GAMES]
 
 def update_progress_and_autosave():
     """Run every frame: keep coins and the main-game copies in sync, and save the logged-in account
@@ -2138,6 +2149,59 @@ pause_menu_anim = 0.0        # 0 = hidden above the screen, 1 = fully down
 settings_from_pause = False  # So Back in Settings knows where to return to
 PAUSE_MENU_BUTTONS = ["Resume", "Settings", "Main Menu", "Quit"]
 
+def in_waves_mode():
+    return not (in_shooting_range or in_storm_survival or in_block_defence or in_tutorial)
+
+def pause_menu_button_names():
+    """Save Game shows up in a solo Waves game with checkpoints on."""
+    if checkpoints_on and in_waves_mode() and not multiplayer_match:
+        return ["Resume", "Save Game", "Settings", "Main Menu", "Quit"]
+    return PAUSE_MENU_BUTTONS
+
+def save_confirm_rects():
+    panel = pygame.Rect(WIDTH // 2 - 290, HEIGHT // 2 - 150, 580, 300)
+    save = pygame.Rect(panel.centerx - 200, panel.bottom - 80, 180, 56)
+    cancel = pygame.Rect(panel.centerx + 20, panel.bottom - 80, 180, 56)
+    return panel, save, cancel
+
+def draw_save_confirm():
+    panel, save, cancel = save_confirm_rects()
+    shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    shade.fill((0, 0, 0, 150))
+    screen.blit(shade, (0, 0))
+    pygame.draw.rect(screen, (24, 28, 38), panel, border_radius=16)  # Solid, so the pause menu doesn't show through
+    draw_panel(panel, highlight=True)
+    title = get_bubble_text("Save Game", 50, (255, 240, 150), (255, 160, 40))
+    screen.blit(title, title.get_rect(center=(panel.centerx, panel.y + 48)))
+    lines = [f"This saves your game on wave {wave}.",
+             "When you load it, you start again at",
+             f"your last checkpoint: wave {checkpoint_wave}."]
+    for i, line in enumerate(lines):
+        text = small_button_font.render(line, True, WHITE if i else (255, 222, 95))
+        screen.blit(text, text.get_rect(center=(panel.centerx, panel.y + 105 + i * 32)))
+    for rect, label, color in ((save, "Save", GREEN), (cancel, "Cancel", BLUE)):
+        draw_button(rect, color)
+        text = button_font.render(label, True, BLACK)
+        screen.blit(text, text.get_rect(center=rect.center))
+
+def save_current_game():
+    """Add this game to the saved games (newest first), named by the wave you're on."""
+    global console_message, console_message_timer
+    saved_games.insert(0, {"wave": wave, "checkpoint": checkpoint_wave, "date": time.strftime("%b %d, %I:%M %p")})
+    del saved_games[MAX_SAVED_GAMES:]
+    save_current_account()
+    console_message, console_message_timer = f"Game saved - loads at checkpoint wave {checkpoint_wave}", 3.0
+    sounds.play("buy")
+
+def start_waves_at(number, message):
+    """Start a fresh Waves game that begins at this wave (a checkpoint or a loaded save)."""
+    global checkpoint_wave, console_message, console_message_timer
+    reset_game()
+    checkpoint_wave = number
+    if number > 1:
+        jump_to_wave(number)
+    console_message, console_message_timer = message, 3.0
+
 def exit_to_main_menu():
     """Leave the current game and go back to the main menu (same as the in-game Exit button)."""
     global start_screen, in_shooting_range, in_storm_survival, in_block_defence, block_defence_coins
@@ -2171,16 +2235,18 @@ def exit_to_main_menu():
 
 def pause_menu_rects():
     """Panel and buttons at the menu's current slide position."""
-    panel_height = 420
+    names = pause_menu_button_names()
+    panel_height = 140 + len(names) * 70
     resting_y = HEIGHT // 2 - panel_height // 2  # Middle of the screen
     y = -panel_height + (panel_height + resting_y) * ease_out_back(min(1.0, pause_menu_anim))
     panel = pygame.Rect(WIDTH // 2 - 230, y, 460, panel_height)
     buttons = [(name, pygame.Rect(panel.x + 80, panel.y + 120 + i * 70, 300, 58))
-               for i, name in enumerate(PAUSE_MENU_BUTTONS)]
+               for i, name in enumerate(names)]
     return panel, buttons
 
 def open_pause_menu():
-    global pause_menu_open, game_paused, pause_countdown
+    global pause_menu_open, game_paused, pause_countdown, save_confirm_open
+    save_confirm_open = False
     pause_menu_open = True
     game_paused = True
     pause_countdown = 0.0
@@ -2201,12 +2267,25 @@ def draw_pause_menu():
     title = get_bubble_text("Pause Menu", 54, (255, 240, 150), (255, 160, 40))
     screen.blit(title, title.get_rect(center=(panel.centerx, panel.y + 60)))
     for name, rect in buttons:
-        draw_button(rect, RED if name == "Quit" else BLUE)
+        draw_button(rect, RED if name == "Quit" else GREEN if name == "Save Game" else BLUE)
         text = button_font.render(name, True, BLACK)
         screen.blit(text, text.get_rect(center=rect.center))
+    if save_confirm_open:
+        draw_save_confirm()
 
 def handle_pause_menu_event(event):
-    global pause_menu_open, pause_menu_anim, settings_open, settings_confirm, settings_from_pause
+    global pause_menu_open, pause_menu_anim, settings_open, settings_confirm, settings_from_pause, save_confirm_open
+    if save_confirm_open:  # The save popup has the screen
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            save_confirm_open = False
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            _, save, cancel = save_confirm_rects()
+            if save.collidepoint(pygame.mouse.get_pos()):
+                save_current_game()
+                save_confirm_open = False
+            elif cancel.collidepoint(pygame.mouse.get_pos()):
+                save_confirm_open = False
+        return
     if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
         close_pause_menu()
         return
@@ -2218,6 +2297,8 @@ def handle_pause_menu_event(event):
             continue
         if name == "Resume":
             close_pause_menu()
+        elif name == "Save Game":
+            save_confirm_open = True
         elif name == "Settings":
             pause_menu_open = False
             pause_menu_anim = 0.0  # Gone at once, rather than sliding away over the Settings screen
@@ -4854,6 +4935,8 @@ def draw_play_tab():
         play_label = font.render("PLAY", True, BLACK)
     screen.blit(play_label, play_label.get_rect(center=PLAY_BUTTON.center))
     draw_lobby_panel()
+    if show_waves_panel():
+        draw_waves_panel()
 
 sandbox_entry_coins = 0  # Your real coins when the Sandbox started; the Sandbox can't change them
 sandbox_snapshot = None  # Where every enemy was when the Sandbox last switched into play mode
@@ -5219,6 +5302,67 @@ def receive_world_message(name, data):
                 block_defence_points -= cost
                 block_health = min(BLOCK_MAX_HEALTH, block_health + health)
 
+def waves_panel():
+    left = 24
+    return pygame.Rect(left, HUB_VIEWPORT.y + 20, WIDTH // 2 - 280 - 70 - left, 440)  # Up to the mode buttons
+
+def waves_panel_layout():
+    panel = waves_panel()
+    toggle = pygame.Rect(panel.x + 16, panel.y + 70, panel.width - 32, 50)
+    rows = [pygame.Rect(panel.x + 16, panel.y + 190 + i * 48, panel.width - 32, 42) for i in range(MAX_SAVED_GAMES)]
+    return panel, toggle, rows
+
+def show_waves_panel():
+    return selected_mode == "Waves" and not play_multiplayer
+
+def draw_waves_panel():
+    panel, toggle, rows = waves_panel_layout()
+    draw_panel(panel)
+    title = coin_font.render("Waves Settings", True, WHITE)
+    screen.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
+    draw_button(toggle, GREEN if checkpoints_on else (95, 100, 110))
+    label = small_button_font.render(f"Checkpoints: {'ON' if checkpoints_on else 'OFF'}", True, BLACK)
+    screen.blit(label, label.get_rect(center=toggle.center))
+    hint = smaller_button_font.render("Checkpoint after every boss" if checkpoints_on
+                                      else "Retry starts from wave 1", True, (170, 175, 182))
+    screen.blit(hint, hint.get_rect(midtop=(panel.centerx, toggle.bottom + 8)))
+    heading = small_button_font.render("Load Game", True, WHITE)
+    screen.blit(heading, (panel.x + 18, rows[0].y - 34))
+    if not saved_games:
+        empty = smaller_button_font.render("No saved games yet" if checkpoints_on else "Checkpoints on to save",
+                                           True, (130, 135, 145))
+        screen.blit(empty, (panel.x + 18, rows[0].y + 6))
+    for save, row in zip(saved_games, rows):
+        draw_button(row, BLUE)
+        name = small_button_font.render(f"Wave {save['wave']}", True, BLACK)
+        screen.blit(name, name.get_rect(midleft=(row.x + 14, row.centery)))
+        info = smaller_button_font.render(f"-> {save['checkpoint']}", True, (30, 40, 70))  # The checkpoint it loads at
+        screen.blit(info, info.get_rect(midright=(row.right - 44, row.centery)))
+        cross = pygame.Rect(row.right - 36, row.y + 7, 28, 28)
+        pygame.draw.rect(screen, RED, cross, border_radius=6)
+        x_text = smaller_button_font.render("X", True, BLACK)
+        screen.blit(x_text, x_text.get_rect(center=cross.center))
+
+def handle_waves_panel_click(pos):
+    """True if the click was on the Waves settings panel."""
+    global checkpoints_on, hub_open, start_screen
+    if not show_waves_panel():
+        return False
+    panel, toggle, rows = waves_panel_layout()
+    if toggle.collidepoint(pos):
+        checkpoints_on = not checkpoints_on
+        return True
+    for i, (save, row) in enumerate(zip(list(saved_games), rows)):
+        if not row.collidepoint(pos):
+            continue
+        if pygame.Rect(row.right - 36, row.y + 7, 28, 28).collidepoint(pos):
+            saved_games.pop(i)  # Delete this save
+        else:
+            hub_open = start_screen = False
+            start_waves_at(save["checkpoint"], f"Loaded your wave {save['wave']} game - starting at checkpoint wave {save['checkpoint']}")
+        return True
+    return panel.collidepoint(pos)
+
 def lobby_panel():
     left = PLAY_CENTER_X + 300
     return pygame.Rect(left, HUB_VIEWPORT.y + 20, WIDTH - 30 - left, 470)
@@ -5451,10 +5595,11 @@ def start_selected_mode():
         reset_game(tutorial=True)
     else:
         reset_game()
+        globals()["checkpoint_wave"] = 1
 
 def handle_play_tab_click(pos):
     global selected_mode, selected_map
-    if handle_lobby_click(pos):
+    if handle_waves_panel_click(pos) or handle_lobby_click(pos):
         return
     if multiplayer_guest():
         return  # The host chooses and starts
@@ -6190,7 +6335,7 @@ while running:
                 blue_last_shot_times.clear()
                 purple_enemies.clear()
                 purple_mini_circles.clear()
-            elif event.key == pygame.K_p and (not start_screen and not game_over
+            elif False and event.key == pygame.K_p and (not start_screen and not game_over
                                               and not hub_open
                                               and not settings_open):
                 if game_paused:
@@ -6494,6 +6639,10 @@ while running:
                     wave_completion_reward = BOSSES[WAVES[wave - 1]["boss"]]["reward"] if finished_boss_wave else 15
                     sounds.play("boss_wave_complete" if finished_boss_wave else "wave_complete")
                     best_wave = max(best_wave, wave - 1)  # Saved to the account
+                    if finished_boss_wave and not multiplayer_match:
+                        checkpoint_wave = wave  # Beat a boss: this next wave is a checkpoint
+                        if checkpoints_on:
+                            console_message, console_message_timer = f"Checkpoint reached: wave {wave}", 3.0
                     wave_completion_timer = wave_completion_duration
                     coin_count += wave_completion_reward
                     main_game_coins = coin_count
@@ -7473,7 +7622,11 @@ while running:
                         elif in_shooting_range:
                             retry_sandbox()  # Back into play mode with the enemies you placed
                         else:
-                            reset_game(tutorial=in_tutorial)  # Retrying the tutorial restarts the tutorial
+                            if in_waves_mode() and checkpoints_on and checkpoint_wave > 1:
+                                start_waves_at(checkpoint_wave, f"Back to your checkpoint: wave {checkpoint_wave}")
+                            else:
+                                reset_game(tutorial=in_tutorial)  # Retrying the tutorial restarts the tutorial
+                                checkpoint_wave = 1
                     if menu_button.collidepoint(mx, my):
                         exit_to_main_menu()  # Leaves the mode properly (puts Sandbox coins back)
 
