@@ -8,6 +8,7 @@ import atexit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # So the game finds cube_accounts.py next to it
 import cube_accounts
+import cube_online
 import updater
 import sounds  # Sound effects: files dropped in the "sounds" folder play on their events
 from version import VERSION
@@ -1441,6 +1442,10 @@ def magnet_level():
     return sum(bool(globals()[f"has_magnet_{n}"]) for n in range(1, 6))
 
 best_wave = 0
+# Online accounts (Supabase) work on every computer. Tests that point the game at a scratch save file stay offline.
+ONLINE_ACCOUNTS = bool(os.environ.get("CUBE_SHOOTER_ONLINE")) or "CUBE_SHOOTER_SAVE" not in os.environ
+online_session = None  # cube_online.Session while logged in to an online account
+cloud_saver = cube_online.Saver() if ONLINE_ACCOUNTS else None
 current_account = None  # Display name of the logged-in player (None = nobody is logged in)
 save_data = cube_accounts.load_save()
 last_saved_progress = None
@@ -1511,9 +1516,20 @@ def update_progress_and_autosave():
     state = progress_state()
     now = time.time()
     if state != last_saved_progress and now - last_save_time >= 1.0:
-        cube_accounts.save_progress(save_data, current_account, state)
+        store_progress(state)
         last_saved_progress = state
         last_save_time = now
+
+def store_progress(state, right_now=False):
+    """Online accounts upload (in the background, or right away) and keep a local copy; local accounts write the save file."""
+    if online_session is None:
+        cube_accounts.save_progress(save_data, current_account, state)
+        return
+    synced = cloud_saver.flush(online_session, state) if right_now else None
+    cube_accounts.cache_cloud_progress(save_data, online_session.user_id, current_account, state,
+                                       unsynced=(synced is False) or (synced is None and cloud_saver.failed))
+    if not right_now:
+        cloud_saver.queue(online_session, state)
 
 def save_current_account():
     """Save right away (when logging out, and when the game closes)."""
@@ -1521,7 +1537,7 @@ def save_current_account():
     if current_account is not None:
         last_saved_progress = progress_state()
         last_save_time = time.time()
-        cube_accounts.save_progress(save_data, current_account, last_saved_progress)
+        store_progress(last_saved_progress, right_now=True)
 
 atexit.register(save_current_account)  # Also covers the Quit buttons, which exit straight away
 
@@ -1549,7 +1565,16 @@ def log_in_as(account, message):
     global console_message, console_message_timer
     apply_progress(account["progress"])
     current_account = account["name"]
-    if login_remember:
+    if online_session is not None:
+        if login_remember:
+            cube_accounts.remember_online(online_session.name, online_session.refresh_token)
+            online_session.on_new_refresh_token = lambda token: cube_accounts.remember_online(current_account, token)
+        else:
+            cube_accounts.forget_remembered(save_data)
+        if save_data.get("last_user") != account["name"]:
+            save_data["last_user"] = account["name"]
+            cube_accounts.write_save(save_data)
+    elif login_remember:
         cube_accounts.remember_account(save_data, account["name"])
     else:
         cube_accounts.forget_remembered(save_data, account["name"])
@@ -1562,9 +1587,12 @@ def log_in_as(account, message):
 
 def log_out():
     """Save and go back to the login screen."""
-    global current_account, login_screen_open, login_focus, login_message, login_remember
+    global current_account, login_screen_open, login_focus, login_message, login_remember, online_session
     save_current_account()
     cube_accounts.forget_remembered(save_data, current_account)  # Logging out means log in again next time
+    if online_session is not None:
+        cube_online.log_out(online_session)
+        online_session = None
     login_remember = False
     current_account = None
     login_fields["username"], login_fields["password"] = save_data["last_user"], ""
@@ -1574,6 +1602,8 @@ def log_out():
 
 def attempt_login():
     global login_message, login_message_ok
+    if ONLINE_ACCOUNTS:
+        return online_attempt(create=False)
     account, login_message = cube_accounts.check_login(save_data, login_fields["username"], login_fields["password"])
     login_message_ok = account is not None
     if account:
@@ -1581,10 +1611,75 @@ def attempt_login():
 
 def attempt_create():
     global login_message, login_message_ok
+    if ONLINE_ACCOUNTS:
+        return online_attempt(create=True)
     account, login_message = cube_accounts.create_account(save_data, login_fields["username"], login_fields["password"])
     login_message_ok = account is not None
     if account:
         log_in_as(account, login_message)
+
+def show_login_status(text):
+    """Draw the login screen with a message right away (the server takes a moment to answer)."""
+    global login_message, login_message_ok
+    login_message, login_message_ok = text, True
+    draw_login_screen()
+    pygame.display.flip()
+
+def newest_progress(session, server_progress):
+    """If this PC holds progress that never reached the server (internet dropped), that copy is newer."""
+    cached = save_data.get("cloud", {}).get(session.user_id)
+    if cached and cached.get("unsynced"):
+        cloud_saver.queue(session, cached["progress"])
+        return cached["progress"]
+    return server_progress
+
+def online_attempt(create):
+    """Log in to / create an online account. A local account from before accounts went online (same
+    username and password) is moved online the first time, bringing its progress with it."""
+    global login_message, login_message_ok, online_session
+    name, password = login_fields["username"].strip(), login_fields["password"]
+    if not 3 <= len(name) <= 16:
+        login_message, login_message_ok = "Username must be 3-16 characters", False
+        return
+    if len(password) < 4:
+        login_message, login_message_ok = "Password must be at least 4 characters", False
+        return
+    show_login_status("Creating account..." if create else "Logging in...")
+    local = cube_accounts.local_account_matches(save_data, name, password)
+    try:
+        if create:
+            session, progress = cube_online.sign_up(name, password, local["progress"] if local else None)
+            message = f"Welcome, {session.name}!"
+        else:
+            try:
+                session, progress = cube_online.log_in(name, password)
+                progress = newest_progress(session, progress)
+                message = f"Welcome back, {session.name}!"
+            except cube_online.ServerError as err:
+                if err.status != 400 or local is None:
+                    raise
+                # Not online yet, but this PC has that account: move it online
+                session, progress = cube_online.sign_up(local["name"], password, local["progress"])
+                message = f"Welcome back, {session.name}! Your account is online now"
+        if local:
+            cube_accounts.mark_moved_online(save_data, name)
+    except cube_online.OfflineError:
+        login_message, login_message_ok = "Can't reach the server - check your internet", False
+        return
+    except cube_online.ServerError as err:
+        if err.status in (400, 409) and not create:  # 409: tried moving a local account but the name is taken online
+            login_message = "Wrong username or password"
+        elif err.status == 409:
+            login_message = "That username is taken"
+        elif err.status == 429:
+            login_message = "Too many tries - wait a minute"
+        else:
+            login_message = "Server error: " + str(err)[:40]
+        login_message_ok = False
+        return
+    online_session = session
+    login_message_ok = True
+    log_in_as({"name": session.name, "progress": progress}, message)
 
 def draw_login_screen():
     screen.blit(metal_background, (0, 0))
@@ -1624,7 +1719,7 @@ def draw_login_screen():
     if login_message:
         message = coin_font.render(login_message, True, (120, 230, 140) if login_message_ok else (255, 110, 110))
         screen.blit(message, message.get_rect(center=(WIDTH // 2, LOGIN_PANEL.y + 378)))
-    names = cube_accounts.account_names(save_data)
+    names = [] if ONLINE_ACCOUNTS else cube_accounts.account_names(save_data)
     if names:
         accounts_text = small_button_font.render("Accounts on this PC: " + ", ".join(names[:6]), True, (170, 175, 182))
         screen.blit(accounts_text, accounts_text.get_rect(center=(WIDTH // 2, LOGIN_PANEL.bottom + 25)))
@@ -4493,6 +4588,14 @@ def handle_settings_content_event(event):
                 save_current_account()
                 console_message, console_message_timer = "Account data deleted", 3.0
             else:
+                if online_session is not None:
+                    try:
+                        cube_online.delete_account(online_session)
+                    except (cube_online.OfflineError, cube_online.ServerError):
+                        console_message, console_message_timer = "Couldn't delete the account - check your internet", 3.0
+                        settings_confirm = None
+                        return
+                    globals()["online_session"] = None
                 cube_accounts.forget_remembered(save_data)
                 cube_accounts.delete_account(save_data, current_account)
                 current_account = None
@@ -5249,7 +5352,21 @@ orbit_radius = 60
 
 running = True
 # Log straight in if this device remembers an account
-_remembered_account = cube_accounts.remembered_account(save_data)
+_remembered_online = cube_accounts.remembered_online() if ONLINE_ACCOUNTS else None
+_remembered_account = None if ONLINE_ACCOUNTS else cube_accounts.remembered_account(save_data)
+if _remembered_online is not None:
+    login_fields["username"] = _remembered_online[0]
+    try:
+        show_login_status("Logging in...")
+        online_session, _progress = cube_online.resume(_remembered_online[1])
+        login_remember = True
+        log_in_as({"name": online_session.name, "progress": newest_progress(online_session, _progress)},
+                  f"Welcome back, {online_session.name}!")
+    except cube_online.OfflineError:
+        login_message, login_message_ok = "Can't reach the server - check your internet", False
+    except cube_online.ServerError:
+        cube_accounts.forget_remembered(save_data)  # Token expired or account gone: log in normally
+        login_message, login_message_ok = "", False
 if _remembered_account is not None:
     login_remember = True
     log_in_as(_remembered_account, f"Welcome back, {_remembered_account['name']}!")

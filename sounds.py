@@ -19,19 +19,19 @@ EXTENSIONS = (".wav", ".ogg", ".mp3", ".flac")
 # event -> file names that count for it (lower case, no extension)
 EVENTS = {
     "shoot":              ["shoot", "shot", "gun", "fire", "player_shoot"],
-    "enemy_death":        ["enemy_death", "enemy_die", "kill", "enemy_killed", "pop", "explode_enemy"],
+    "enemy_death":        ["enemy_death", "enemy_and_player_die", "enemy_die", "kill", "enemy_killed", "pop", "explode_enemy"],
     "coin":               ["coin", "coin_pickup", "pickup", "collect"],
-    "player_death":       ["player_death", "death", "die", "game_over", "gameover", "lose"],
+    "player_death":       ["player_death", "enemy_and_player_die", "death", "die", "game_over", "gameover", "lose"],
     "wave_complete":      ["wave_complete", "wave", "wave_clear", "win"],
     "boss_wave_complete": ["boss_wave_complete", "boss_complete", "boss_win", "victory"],
     "boss_spawn":         ["boss_spawn", "boss_start", "boss"],
     "boss_hit":           ["boss_hit", "boss_damage", "hit"],
     "boss_death":         ["boss_death", "boss_die", "boss_defeated"],
     "shield_block":       ["shield_block", "shield_hit", "boss_shield", "block_shot"],
-    "shot_clash":         ["shot_clash", "clash", "bullet_break", "break"],
+    "shot_clash":         ["shot_clash", "2_lasers_hit", "lasers_hit", "clash", "bullet_break", "break"],
     "teal_explode":       ["teal_explode", "explosion", "explode", "boom"],
     "block_damage":       ["block_damage", "block_hit"],
-    "buy":                ["buy", "purchase", "repair", "upgrade", "shop"],
+    "buy":                ["buy", "buy_something", "purchase", "repair", "upgrade", "shop"],
     "shield":             ["shield", "shield_on", "player_shield"],}
 
 MIN_GAP = 0.04       # The same sound can't restart faster than this (a 30-enemy wipe shouldn't be deafening)
@@ -78,15 +78,20 @@ def _scan():
             for entry in os.listdir(folder):
                 stem, ext = os.path.splitext(entry)
                 if ext.lower() in EXTENSIONS:
-                    names[stem.lower().replace(" ", "_").replace("-", "_")] = os.path.join(folder, entry)
+                    names[_key(stem)] = os.path.join(folder, entry)
         except OSError:
             continue
     _files.clear()
     for event, aliases in EVENTS.items():
         for alias in [event] + aliases:
-            if alias in names:
-                _files[event] = names[alias]
+            if _key(alias) in names:
+                _files[event] = names[_key(alias)]
                 break
+
+
+def _key(name):
+    """CoinPickup, coin_pickup and "coin pickup" all count as the same name."""
+    return "".join(ch for ch in name.lower() if ch.isalnum())
 
 
 def play(event, volume=1.0):

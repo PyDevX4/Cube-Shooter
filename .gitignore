@@ -15,3 +15,4 @@ icon.ico
 # Old copies and caches
 *_backup.py
 __pycache__/
+cube_shooter_save_OLD_local_accounts.json

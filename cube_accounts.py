@@ -85,6 +85,50 @@ def remembered_account(data):
     return account
 
 
+def remember_online(username, refresh_token):
+    """Online accounts: keep this device logged in with the server's refresh token (it changes as it's used)."""
+    os.makedirs(os.path.dirname(REMEMBER_PATH), exist_ok=True)
+    tmp_path = REMEMBER_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump({"online": True, "username": username, "refresh_token": refresh_token}, f)
+    os.replace(tmp_path, REMEMBER_PATH)
+
+
+def remembered_online():
+    """(username, refresh_token) if this device is remembered for an online account, else None."""
+    try:
+        with open(REMEMBER_PATH, encoding="utf-8") as f:
+            remembered = json.load(f)
+        if remembered.get("online"):
+            return str(remembered["username"]), str(remembered["refresh_token"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def local_account_matches(data, name, password):
+    """A local (this-PC-only) account with this exact username and password that hasn't moved online yet."""
+    account = data["accounts"].get(name.strip().lower())
+    if account is None or account.get("moved_online"):
+        return None
+    if not secrets.compare_digest(account["password_hash"], _hash_password(password, account["salt"])):
+        return None
+    return account
+
+
+def mark_moved_online(data, name):
+    account = data["accounts"].get(name.strip().lower())
+    if account is not None:
+        account["moved_online"] = True
+        write_save(data)
+
+
+def cache_cloud_progress(data, user_id, name, progress, unsynced):
+    """Local copy of an online account's progress, so nothing is lost if the internet drops."""
+    data.setdefault("cloud", {})[user_id] = {"name": name, "progress": progress, "unsynced": bool(unsynced)}
+    write_save(data)
+
+
 def _hash_password(password, salt_hex):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), HASH_ROUNDS).hex()
 
