@@ -1983,9 +1983,15 @@ def set_boss_health(kind, health):
         elif health == 25:
             teal_boss_start_guard(boss, 25)
     if kind == "pink":
-        boss["events_done"] = [at for at in (175,) if at > health]
+        boss["events_done"] = [at for at in (175, 150) if at > health]
+        boss["lines"], boss["shielded"] = None, False
+        if boss["phase"] not in ("start", "aim", "dash", "rest"):
+            boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
+            boss["phase"], boss["timer"] = "rest", 0.5
         if health == 175:
             pink_boss_start_exit(boss)
+        elif health == 150:
+            pink_boss_start_lines(boss)
     if kind == "yellow":
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         boss["event"], boss["shielded"], boss["arms"] = None, False, None
@@ -3340,6 +3346,15 @@ PINK_BOSS_OVERSHOOT = 180       # His dash ends this far past the player
 PINK_BOSS_REST_TIME = 0.5       # ...and rests this long after each dash
 PINK_BOSS_DASH_SPEED = 9000     # Pixels per second: so fast it's nearly a teleport
 PINK_BOSS_SPAWN_AT_175 = {"pink": 30, "blue": 50, "teal": 25}
+PINK_BOSS_RETURN_SPAWN = {"green": 75}   # When he comes back after the 175 wave
+PINK_BOSS_SLIDE_SPEED = 1400    # Sliding back onto the map
+PINK_BOSS_RETURN_WAIT = 1.0
+PINK_LINES_ROUNDS = 20          # At 150: this many rounds of diagonal lines...
+PINK_LINES_WARNING = 1.0        # ...each shown this long before the pinks run them...
+PINK_LINES_GAP = 0.5            # ...with this long after they've crossed before the next warning
+PINK_LINES_SPACING = 190        # Gap between neighbouring lines (enough room to stand between them)
+PINK_RUNNER_SPEED = 2600        # How fast each pink runs its line
+PINK_RUNNER_HIT = 44            # Touch distance for a runner
 # Orange Boss: four laser guns on a turret, in four stages, with a shielded laser-lines event at 75, 50 and 25.
 YELLOW_BOSS_ORB_DISTANCE = BOSS_RADIUS + 70
 YELLOW_BOSS_ORB_RADIUS = 30
@@ -3549,10 +3564,34 @@ def update_pink_boss(boss, dt):
             spawn_minions_any(PINK_BOSS_SPAWN_AT_175)
     elif phase == "gone":
         if not any_enemies_alive():
-            # (Not designed yet: for now he comes back to the middle and dashes again once they're all dead)
-            boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
-            effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.5, "color": BOSSES["pink"]["color"], "size": 3.5})
-            boss["phase"], boss["timer"] = "rest", 1.5
+            # Everything he called in is dead: he slides back in from the side away from the player
+            tx, ty = nearest_player(MAP_WIDTH / 2, MAP_HEIGHT / 2)
+            ax, ay = MAP_WIDTH / 2 - (tx + player_size / 2), MAP_HEIGHT / 2 - (ty + player_size / 2)
+            away = math.hypot(ax, ay)
+            ax, ay = (ax / away, ay / away) if away > 1 else (1.0, 0.0)
+            far = math.hypot(MAP_WIDTH, MAP_HEIGHT) / 2 + BOSS_RADIUS * 2
+            boss["x"], boss["y"] = MAP_WIDTH / 2 + ax * far, MAP_HEIGHT / 2 + ay * far
+            inside = min(MAP_WIDTH, MAP_HEIGHT) / 2 - BOSS_RADIUS - 60
+            boss["target"] = (MAP_WIDTH / 2 + ax * inside, MAP_HEIGHT / 2 + ay * inside)
+            boss["angle"] = math.atan2(-ay, -ax)
+            boss["phase"] = "return"
+    elif phase == "return":
+        tx, ty = boss["target"]
+        gap = math.hypot(tx - boss["x"], ty - boss["y"])
+        step = PINK_BOSS_SLIDE_SPEED * dt
+        if gap <= step:
+            boss["x"], boss["y"] = tx, ty
+            boss["phase"], boss["timer"] = "back", PINK_BOSS_RETURN_WAIT
+        else:
+            boss["x"] += (tx - boss["x"]) / gap * step
+            boss["y"] += (ty - boss["y"]) / gap * step
+    elif phase == "back":
+        if boss["timer"] <= 0:
+            spawn_minions_any(PINK_BOSS_RETURN_SPAWN)  # 75 greens, and he's back to dashing
+            pink_boss_pick_target(boss)
+            boss["phase"], boss["timer"] = "aim", PINK_BOSS_AIM_TIME
+    elif phase == "lines":
+        update_pink_lines(boss, dt)
 
 def pink_boss_start_exit(boss):
     """At 175: he dashes off the map, straight away from the player, and vanishes."""
@@ -3566,8 +3605,94 @@ def pink_boss_start_exit(boss):
     boss["target"] = (boss["x"] + dx / distance * far, boss["y"] + dy / distance * far)
     boss["phase"] = "exit"
 
+def pink_boss_start_lines(boss):
+    """At 150: he shields up and the diagonal pink runs start."""
+    boss["events_done"].append(150)
+    boss["health"] = 150
+    boss["shielded"], boss["ripple"] = True, 0.4
+    boss["phase"] = "lines"
+    boss["lines"] = {"round": 0, "phase": "warning", "timer": PINK_LINES_WARNING, "runners": [],
+                     "dir": random.choice((1, -1)), "offset": random.uniform(0, PINK_LINES_SPACING)}
+
+def pink_line_segments(lines):
+    """Every line of this round, clipped to the barrier: (start, end) points, crossing the whole map diagonally."""
+    barrier = 12
+    dx, dy = 1 / math.sqrt(2), lines["dir"] / math.sqrt(2)
+    nx, ny = -dy, dx
+    corners = [(barrier, barrier), (MAP_WIDTH - barrier, barrier), (barrier, MAP_HEIGHT - barrier), (MAP_WIDTH - barrier, MAP_HEIGHT - barrier)]
+    lows, highs = min(nx * x + ny * y for x, y in corners), max(nx * x + ny * y for x, y in corners)
+    segments = []
+    c = lows + (lines["offset"] % PINK_LINES_SPACING)
+    while c < highs:
+        px, py = nx * c, ny * c  # A point on this line
+        t_lo, t_hi = -math.inf, math.inf
+        for p, d, lo, hi in ((px, dx, barrier, MAP_WIDTH - barrier), (py, dy, barrier, MAP_HEIGHT - barrier)):
+            a, b = (lo - p) / d, (hi - p) / d
+            t_lo, t_hi = max(t_lo, min(a, b)), min(t_hi, max(a, b))
+        if t_hi - t_lo > 40:
+            segments.append(((px + dx * t_lo, py + dy * t_lo), (px + dx * t_hi, py + dy * t_hi)))
+        c += PINK_LINES_SPACING
+    return segments
+
+def update_pink_lines(boss, dt):
+    """Warning (1 s) -> a pink runs every line from one side of the barrier to the other -> 0.5 s -> the other diagonal.
+    20 rounds, then his shield drops and he goes back to dashing."""
+    lines = boss["lines"]
+    lines["timer"] -= dt
+    px, py = player_x + player_size / 2, player_y + player_size / 2
+    for runner in lines["runners"]:
+        (sx, sy), (ex, ey) = runner["from"], runner["to"]
+        length = math.hypot(ex - sx, ey - sy) or 1.0
+        runner["d"] = min(length, runner["d"] + PINK_RUNNER_SPEED * dt)
+        runner["x"], runner["y"] = sx + (ex - sx) * runner["d"] / length, sy + (ey - sy) * runner["d"] / length
+        if not game_over and not player_safe() and math.hypot(px - runner["x"], py - runner["y"]) < PINK_RUNNER_HIT:
+            player_hit()
+    lines["runners"] = [r for r in lines["runners"] if r["d"] < math.hypot(r["to"][0] - r["from"][0], r["to"][1] - r["from"][1])]
+    if lines["phase"] == "warning" and lines["timer"] <= 0:
+        flip = random.random() < 0.5  # Which end each round's pinks start from
+        lines["runners"] = [{"from": (b if flip else a), "to": (a if flip else b), "d": 0.0, "x": 0.0, "y": 0.0}
+                            for a, b in pink_line_segments(lines)]
+        lines["phase"] = "running"
+    elif lines["phase"] == "running" and not lines["runners"]:
+        lines["phase"], lines["timer"] = "gap", PINK_LINES_GAP
+    elif lines["phase"] == "gap" and lines["timer"] <= 0:
+        lines["round"] += 1
+        if lines["round"] >= PINK_LINES_ROUNDS:
+            # (Not designed yet past here: for now his shield drops and he goes back to dashing)
+            boss["lines"] = None
+            boss["shielded"], boss["ripple"] = False, 0.4
+            boss["phase"], boss["timer"] = "rest", 0.5
+            return
+        lines["dir"] = -lines["dir"]  # The other diagonal
+        lines["offset"] = random.uniform(0, PINK_LINES_SPACING)
+        lines["phase"], lines["timer"] = "warning", PINK_LINES_WARNING
+
+def draw_pink_lines(boss):
+    lines = boss.get("lines")
+    if not lines:
+        return
+    layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    if lines["phase"] == "warning":
+        charge = 1 - max(0.0, lines["timer"]) / PINK_LINES_WARNING
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 70)
+        for (sx, sy), (ex, ey) in pink_line_segments(lines):
+            a, b = (sx - camera_x, sy - camera_y), (ex - camera_x, ey - camera_y)
+            pygame.draw.line(layer, (255, 60, 165, int(80 + 80 * charge)), a, b, int(PINK_RUNNER_HIT * 2))
+            pygame.draw.line(layer, (255, 235, 248, int(170 + 80 * pulse * charge)), a, b, 4)
+    for runner in lines["runners"]:
+        (sx, sy) = runner["from"]
+        tail = (sx - camera_x, sy - camera_y)
+        head = (runner["x"] - camera_x, runner["y"] - camera_y)
+        pygame.draw.line(layer, (255, 150, 210, 120), tail, head, 10)  # Streak behind it
+    screen.blit(layer, (0, 0))
+    half = player_size / 2
+    for runner in lines["runners"]:
+        rx, ry = runner["x"] - camera_x, runner["y"] - camera_y
+        if on_screen(rx, ry, 60):
+            draw_orb(pink_orb, enemy_shadow, rx, ry)
+
 def pink_boss_visible(boss):
-    return boss["phase"] not in ("gone",)
+    return boss["phase"] not in ("gone", "return")
 
 def draw_pink_dash_path(boss, cx, cy):
     """His warning: a crackling pink lightning bolt that shoots out of him toward where he'll land,
@@ -3658,7 +3783,7 @@ def update_boss(dt):
     touching = math.hypot(px - boss["x"], py - boss["y"]) < BOSS_RADIUS + player_size / 2 - 6
     if boss["kind"] == "teal":
         touching = False  # He lands right on you on purpose - only his explosion hurts
-    if boss["kind"] == "pink" and boss["phase"] in ("gone", "exit"):
+    if boss["kind"] == "pink" and boss["phase"] in ("gone", "exit", "return"):
         touching = False
     if touching and not game_over and not player_safe() and boss["grace"] == 0 and boss_push == [0.0, 0.0]:
         player_hit()
@@ -4411,12 +4536,18 @@ def hurt_boss(amount=1, force=False):
             teal_boss_start_guard(boss, 25)
         amount = 0
     if boss["kind"] == "pink" and not force:
-        if boss["phase"] in ("exit", "gone"):
+        if boss["phase"] in ("exit", "gone", "return"):
+            return
+        if boss["shielded"]:
+            boss["ripple"] = 0.25
+            sounds.play("shield_block", 0.6)
             return
         boss["health"] -= amount
         boss["flash"] = 0.08
         if boss["health"] <= 175 and 175 not in boss["events_done"] and boss["health"] > 0:
             pink_boss_start_exit(boss)
+        elif boss["health"] <= 150 and 150 not in boss["events_done"] and boss["health"] > 0:
+            pink_boss_start_lines(boss)
         amount = 0
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
@@ -4532,6 +4663,7 @@ def draw_boss():
     info = BOSSES[boss["kind"]]
     cx, cy = boss["x"] - camera_x, boss["y"] - camera_y
     if boss["kind"] == "pink":
+        draw_pink_lines(boss)
         if boss["phase"] == "gone":
             return
         if boss["phase"] == "aim" and boss.get("target"):
@@ -4600,7 +4732,7 @@ def draw_boss():
     draw_eye(cx, cy, look_x, look_y, 32, BOSS_RADIUS * 0.3)
     if boss["kind"] == "purple":
         draw_purple_boss_parts(boss, cx, cy)
-    if boss["kind"] in ("blue", "purple", "orange", "yellow") and (boss["shielded"] or boss["ripple"] > 0):
+    if boss["kind"] in ("blue", "purple", "orange", "yellow", "pink") and (boss["shielded"] or boss["ripple"] > 0):
         draw_boss_shield(boss, cx, cy)
     if boss["flash"] > 0:
         flash = pygame.Surface((BOSS_RADIUS * 2, BOSS_RADIUS * 2), pygame.SRCALPHA)
