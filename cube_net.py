@@ -8,10 +8,11 @@ import json
 import os
 import queue
 import threading
+import time
 
 import websockets
 
-SERVER_URL = os.environ.get("CUBE_SHOOTER_SERVER", "wss://cube-shooter-server.fly.dev")
+SERVER_URL = os.environ.get("CUBE_SHOOTER_SERVER", "wss://cube-shooter-server.onrender.com")
 
 
 class Net(object):
@@ -25,19 +26,33 @@ class Net(object):
         self._loop = None
         self._ws = None
         self._thread = None
+        self.connect_started = 0.0
+
+    @property
+    def waking_up(self):
+        """Still connecting after a few seconds: the free server was asleep and is starting up."""
+        return self.status == "connecting" and time.monotonic() - self.connect_started > 3
 
     # ---- connection ----
     def connect(self, token):
         if self.status != "offline":
             return
         self.status, self.error = "connecting", ""
+        self.connect_started = time.monotonic()
         self._thread = threading.Thread(target=self._run, args=(token,), name="cube-net", daemon=True)
         self._thread.start()
 
     def close(self):
         loop, ws = self._loop, self._ws
         if loop and ws:
-            asyncio.run_coroutine_threadsafe(ws.close(), loop)
+            async def go():
+                try:
+                    # Say we're leaving first: a hosting proxy can hold up the close itself for many seconds
+                    await ws.send(json.dumps({"t": "leave"}))
+                except websockets.ConnectionClosed:
+                    pass
+                await ws.close()
+            asyncio.run_coroutine_threadsafe(go(), loop)
         self.lobby = None
 
     def _run(self, token):
@@ -52,7 +67,7 @@ class Net(object):
 
     async def _main(self, token):
         try:
-            async with websockets.connect(self.url, open_timeout=10, max_size=1024 * 1024) as ws:
+            async with websockets.connect(self.url, open_timeout=90, close_timeout=2, max_size=1024 * 1024) as ws:
                 self._ws = ws
                 await ws.send(json.dumps({"t": "hello", "token": token}))
                 async for raw in ws:
@@ -67,6 +82,8 @@ class Net(object):
                         self.lobby = msg if msg.get("code") else None
                     elif kind == "error":
                         self.error = msg.get("msg", "")
+                        if msg.get("fatal"):
+                            break  # The server turned us away (bad login)
                     self.inbox.put(msg)
         except (OSError, websockets.InvalidURI, websockets.InvalidHandshake, asyncio.TimeoutError) as err:
             self.error = "Can't reach the multiplayer server"

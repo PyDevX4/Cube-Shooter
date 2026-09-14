@@ -122,7 +122,7 @@ async def handle(client, msg):
         except Exception:
             name = None
         if not name:
-            await send(client, {"t": "error", "msg": "Login expired - log in again"})
+            await send(client, {"t": "error", "msg": "Login expired - log in again", "fatal": True})
             return await client.ws.close()
         client.name = name
         return await send(client, {"t": "welcome", "name": name})
@@ -210,12 +210,12 @@ async def connection(ws):
 async def health(connection, request):
     """Plain HTTP GET / answers "ok" (Fly.io's health check); WebSocket upgrades go through."""
     if request.headers.get("Upgrade", "").lower() != "websocket":
-        return connection.respond(200, "Cube Shooter server ok\n")
+        return connection.respond(200, "Cube Shooter server ok (2)\n")
 
 
 async def main():
     async with websockets.serve(connection, "0.0.0.0", PORT, max_size=MAX_MESSAGE, process_request=health,
-                                ping_interval=20, ping_timeout=20):
+                                ping_interval=20, ping_timeout=20, close_timeout=2):
         print("Cube Shooter server listening on port", PORT, flush=True)
         await asyncio.Future()
 

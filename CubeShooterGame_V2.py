@@ -4886,8 +4886,12 @@ def draw_lobby_panel():
         screen.blit(hint, (x, y + 90))
     elif net.status != "online" or not net.lobby:
         dots = "." * (1 + pygame.time.get_ticks() // 400 % 3)
-        text = small_button_font.render("Connecting" + dots, True, grey)
+        text = small_button_font.render(("Waking up the server" if net.waking_up else "Connecting") + dots, True, grey)
         screen.blit(text, (x, y))
+        if net.waking_up:
+            for i, line in enumerate(("The server sleeps when nobody is", "playing. This can take up to a minute.")):
+                hint = smaller_button_font.render(line, True, (140, 145, 152))
+                screen.blit(hint, (x, y + 36 + i * 24))
     else:
         lobby = net.lobby
         label = small_button_font.render("Lobby code:", True, grey)
