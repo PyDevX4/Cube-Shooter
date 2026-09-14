@@ -3350,10 +3350,10 @@ PINK_BOSS_RETURN_SPAWN = {"green": 75}   # When he comes back after the 175 wave
 PINK_BOSS_SLIDE_SPEED = 1400    # Sliding back onto the map
 PINK_BOSS_RETURN_WAIT = 1.0
 PINK_LINES_ROUNDS = 20          # At 150: this many rounds of diagonal lines...
-PINK_LINES_WARNING = 1.0        # ...each shown this long before the pinks run them...
-PINK_LINES_GAP = 0.5            # ...with this long after they've crossed before the next warning
-PINK_LINES_SPACING = 190        # Gap between neighbouring lines (enough room to stand between them)
-PINK_RUNNER_SPEED = 2600        # How fast each pink runs its line
+PINK_LINES_WARNING = 1.0 / 1.5  # ...each shown this long before the pinks run them (1.5x quicker than 1 s)...
+PINK_LINES_GAP = 0.5 / 1.5      # ...with this long after they've crossed before the next warning
+PINK_LINES_SPACING = 156        # Line to line: the safe gap between two runners' paths is 68 px (1.5x smaller than before)
+PINK_RUNNER_SPEED = 3900        # How fast each pink runs its line (1.5x quicker)
 PINK_RUNNER_HIT = 44            # Touch distance for a runner
 # Orange Boss: four laser guns on a turret, in four stages, with a shielded laser-lines event at 75, 50 and 25.
 YELLOW_BOSS_ORB_DISTANCE = BOSS_RADIUS + 70
@@ -3606,7 +3606,8 @@ def pink_boss_start_exit(boss):
     boss["phase"] = "exit"
 
 def pink_boss_start_lines(boss):
-    """At 150: he shields up and the diagonal pink runs start."""
+    """At 150: every enemy still alive dies (no coins), he shields up and the diagonal pink runs start."""
+    kill_all_enemies_no_coins()
     boss["events_done"].append(150)
     boss["health"] = 150
     boss["shielded"], boss["ripple"] = True, 0.4
