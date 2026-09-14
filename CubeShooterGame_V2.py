@@ -3336,7 +3336,7 @@ BOSSES = {
 }
 PINK_BOSS_START_WAIT = 3.0      # Waits this long at the start
 PINK_BOSS_AIM_TIME = 0.75       # Shows where he's going for this long...
-PINK_BOSS_OVERSHOOT = 180       # His diagonal dash ends this far past the player
+PINK_BOSS_OVERSHOOT = 180       # His dash ends this far past the player
 PINK_BOSS_REST_TIME = 0.5       # ...and rests this long after each dash
 PINK_BOSS_DASH_SPEED = 9000     # Pixels per second: so fast it's nearly a teleport
 PINK_BOSS_SPAWN_AT_175 = {"pink": 30, "blue": 50, "teal": 25}
@@ -3491,16 +3491,13 @@ def spawn_boss(kind):
         active_boss["grace"] = 1.0  # Can't hurt the player while they slide out
 
 def pink_boss_pick_target(boss):
-    """Where his next dash ends: always diagonal (like pink enemies), on the diagonal toward the nearest player,
-    going a little past them (stopped by the barrier)."""
+    """Where his next dash ends: straight at the nearest player and a little past them (stopped by the barrier)."""
     tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
     px, py = tx + player_size / 2, ty + player_size / 2
-    sx, sy = (1 if px >= boss["x"] else -1), (1 if py >= boss["y"] else -1)
-    dx, dy = sx / math.sqrt(2), sy / math.sqrt(2)
-    distance = 1.0
+    dx, dy = px - boss["x"], py - boss["y"]
+    distance = math.hypot(dx, dy) or 1.0
     boss["angle"] = math.atan2(dy, dx)
-    along = (px - boss["x"]) * dx + (py - boss["y"]) * dy  # How far along the diagonal the player is
-    reach = max(0.0, along) + PINK_BOSS_OVERSHOOT
+    reach = distance + PINK_BOSS_OVERSHOOT
     margin = BOSS_RADIUS + 12
     for limit, d, pos in ((MAP_WIDTH - margin, dx, boss["x"]), (MAP_HEIGHT - margin, dy, boss["y"])):
         if d > 1e-9:
