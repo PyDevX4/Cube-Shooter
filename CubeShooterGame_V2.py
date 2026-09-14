@@ -1445,7 +1445,8 @@ ABILITIES = [("freeze", "Freeze", (150, 220, 255), 1500), ("shield", "Shield", (
              ("teleport", "Teleport", (190, 120, 255), 1300), ("helpers", "Helpers", (255, 210, 90), 1800),
              ("shockwave", "Shockwave", (255, 140, 60), 2000),
              ("coin_controller", "Coin Controller", (255, 215, 40), 1300), ("triple_bullet", "Triple Bullet", (255, 90, 120), 1600)]
-ABILITY_ICONS = {key: create_orb_sprite(color, 34, glow=8) for key, _, color, _ in ABILITIES}
+ABILITY_ICON_SIZE = 84
+ability_icon_cache = {}
 DAILY_SKIN_POOL = [skin for skin in shop_skins if skin not in ("white", "black")]
 GUN_SHOT_DELAYS = [0.5, 0.43, 0.36, 0.29, 0.22, 0.15]  # Time between shots for gun level 0-5 (5 = the old max)
 MAGNET_RANGES = [0, 120, 140, 160, 180, 200]  # Coin pull distance for magnet level 0-5 (5 = the old max)
@@ -5202,6 +5203,89 @@ HUB_VIEWPORT = pygame.Rect(0, 186, WIDTH, HEIGHT - 196)
 SHOP_ICONS = {"gun": create_orb_sprite((120, 200, 255), 30, glow=8),
               "magnet": create_orb_sprite((255, 200, 60), 30, glow=8)}
 
+def ability_icon(key):
+    """A logo for an ability, drawn with the ability's own art. Helpers use your current skin."""
+    skin_key = current_skin if key == "helpers" else None
+    cache_key = (key, skin_key)
+    if cache_key in ability_icon_cache and skin_key != "rainbow":
+        return ability_icon_cache[cache_key]
+    global screen
+    size = ABILITY_ICON_SIZE
+    c = size / 2
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    real_screen, screen = screen, surf  # The game's draw helpers draw onto `screen`: point them at the logo
+    try:
+        if key == "freeze":
+            glow = pygame.Surface((size, size), pygame.SRCALPHA)
+            pygame.draw.circle(glow, (150, 220, 255, 60), (c, c), 38)
+            surf.blit(glow, (0, 0))
+            draw_ice_block(c, c, 52, 0.45, 7)
+            for angle in range(0, 360, 60):  # A little snowflake sparkle in the corner
+                a = math.radians(angle)
+                pygame.draw.line(surf, (235, 250, 255), (68, 16), (68 + math.cos(a) * 9, 16 + math.sin(a) * 9), 2)
+            pygame.draw.circle(surf, (255, 255, 255), (68, 16), 3)
+        elif key == "shield":
+            steps, arc_size, radius, thick = 24, SHIELD_ARC, 36, 15
+            cx, cy = c, c + 30
+            start = -math.pi / 2 - arc_size / 2
+            def arc(r):
+                return [(cx + math.cos(start + arc_size * i / steps) * r, cy + math.sin(start + arc_size * i / steps) * r)
+                        for i in range(steps + 1)]
+            outer, inner = arc(radius + thick / 2), arc(radius - thick / 2)
+            pygame.draw.polygon(surf, (80, 170, 255, 70), arc(radius + thick / 2 + 8) + arc(radius - thick / 2 - 5)[::-1])
+            pygame.draw.polygon(surf, (90, 190, 255, 200), outer + inner[::-1])
+            for i in range(2, steps - 1, 3):
+                pygame.draw.line(surf, (205, 240, 255, 190), inner[i], outer[i], 2)
+            pygame.draw.lines(surf, (235, 250, 255), False, outer, 3)
+            pygame.draw.lines(surf, (150, 220, 255), False, inner, 2)
+            pygame.draw.circle(surf, (120, 210, 255, 140), outer[steps // 3], 6)
+            pygame.draw.circle(surf, (255, 255, 255), outer[steps // 3], 3)
+        elif key == "teleport":
+            color = (190, 130, 255)
+            a, b = (18, 66), (66, 18)
+            pygame.draw.line(surf, (*color, 110), a, b, 12)  # The streak of light between the two spots
+            pygame.draw.line(surf, (255, 255, 255), a, b, 3)
+            rng = random.Random(4)
+            for x, y in (a, b):
+                pygame.draw.circle(surf, (*color, 90), (x, y), 16)
+                pygame.draw.circle(surf, color, (x, y), 13, 3)
+                pygame.draw.circle(surf, (255, 255, 255), (x, y), 6)
+                for _ in range(6):  # Shards flying out
+                    ang = rng.uniform(0, 2 * math.pi)
+                    d = rng.uniform(15, 22)
+                    px, py = x + math.cos(ang) * d, y + math.sin(ang) * d
+                    pygame.draw.polygon(surf, rng.choice([color, (255, 255, 255), (220, 190, 255)]),
+                                        [(px - 2, py), (px, py - 2), (px + 2, py), (px, py + 2)])
+        elif key == "helpers":
+            face = skin_face(current_skin, pygame.time.get_ticks() / 1000.0)
+            glow = SKIN_GLOWS.get(current_skin, face if isinstance(face, tuple) else WHITE)
+            draw_player_cube(8, 26, face, glow, -0.3, size=32)
+            draw_player_cube(44, 26, face, glow, -2.8, size=32)
+        elif key == "shockwave":
+            pygame.draw.circle(surf, (170, 40, 255, 70), (c, c), 36)
+            for r, alpha in ((22, 110), (14, 80)):
+                pygame.draw.circle(surf, (170, 70, 255, alpha), (c, c), r, 3)
+            for spoke in range(12):
+                ang = spoke * math.pi / 6
+                pygame.draw.line(surf, (240, 190, 255), (c + math.cos(ang) * 26, c + math.sin(ang) * 26),
+                                 (c + math.cos(ang) * 36, c + math.sin(ang) * 36), 3)
+            pygame.draw.circle(surf, (205, 110, 255), (c, c), 36, 7)
+            pygame.draw.circle(surf, (255, 235, 255), (c, c), 36, 3)
+            pygame.draw.circle(surf, (255, 240, 255), (c, c), 6)
+        elif key == "coin_controller":
+            coin = pygame.transform.smoothscale(coin_orb, (26, 26))
+            for x, y in ((22, 58), (42, 60), (62, 58), (32, 42), (52, 42), (42, 25)):  # A pile of coins
+                surf.blit(coin, coin.get_rect(center=(x, y)))
+        elif key == "triple_bullet":
+            for spread in (-0.42, 0.0, 0.42):  # Three blue shots fanning out from the corner, like the ability
+                ang = -math.pi / 4 + spread
+                head = (16 + math.cos(ang) * 60, 68 + math.sin(ang) * 60)
+                draw_laser("player", head[0], head[1], math.cos(ang) * 10, math.sin(ang) * 10)
+    finally:
+        screen = real_screen
+    ability_icon_cache[cache_key] = surf
+    return surf
+
 def draw_shop_card(card, button, tag, icon, name, button_color, label):
     """One shop/locker card: type tag, icon, name and a button."""
     draw_panel(card, highlight=button_color == GREEN)
@@ -6119,7 +6203,8 @@ def draw_abilities_tab():
         number = coin_font.render(str(i + 1), True, (255, 222, 95))
         screen.blit(number, (rect.x + 8, rect.y + 4))
         if key and not (ability_drag and ability_drag.get("from_slot") == i):
-            screen.blit(ABILITY_ICONS[key], ABILITY_ICONS[key].get_rect(center=(rect.centerx, rect.centery - 8)))
+            icon = pygame.transform.smoothscale(ability_icon(key), (70, 70))
+            screen.blit(icon, icon.get_rect(center=(rect.centerx, rect.centery - 8)))
             name = smaller_button_font.render(next(n for k, n, _, _ in ABILITIES if k == key), True, WHITE)
             screen.blit(name, name.get_rect(midbottom=(rect.centerx, rect.bottom - 6)))
         else:
@@ -6140,12 +6225,12 @@ def draw_abilities_tab():
             button_color, label = BLUE, f"Buy - {price}"
         else:
             button_color, label = DARK_RED, f"Need {price}"
-        draw_shop_card(card, button, "ABILITY", ABILITY_ICONS[key], name, button_color, label)
+        draw_shop_card(card, button, "ABILITY", ability_icon(key), name, button_color, label)
     screen.set_clip(None)
     draw_scrollbar(ABILITY_VIEWPORT, ability_scroll, max_card_scroll(len(ABILITIES), ABILITY_VIEWPORT))
     if ability_drag:  # The ability being dragged follows the mouse
         mx, my = pygame.mouse.get_pos()
-        icon = ABILITY_ICONS[ability_drag["key"]]
+        icon = ability_icon(ability_drag["key"])
         screen.blit(icon, icon.get_rect(center=(mx, my)))
 
 def handle_abilities_tab_click(pos):
@@ -6205,7 +6290,7 @@ def draw_ability_slots_hud():
         screen.blit(panel, rect.topleft)
         key = ability_slots[i]
         if key:
-            icon = pygame.transform.smoothscale(ABILITY_ICONS[key], (40, 40))
+            icon = pygame.transform.smoothscale(ability_icon(key), (46, 46))
             screen.blit(icon, icon.get_rect(center=rect.center))
             cooldown = g.get(key + "_cooldown", 0.0)
             full = g.get(key + "_cooldown_time", 1.0) or 1.0
