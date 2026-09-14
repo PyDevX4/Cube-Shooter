@@ -1982,6 +1982,10 @@ def set_boss_health(kind, health):
             teal_boss_start_swarm(boss, 50)
         elif health == 25:
             teal_boss_start_guard(boss, 25)
+    if kind == "pink":
+        boss["events_done"] = [at for at in (175,) if at > health]
+        if health == 175:
+            pink_boss_start_exit(boss)
     if kind == "yellow":
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         boss["event"], boss["shielded"], boss["arms"] = None, False, None
@@ -3277,6 +3281,7 @@ WAVES = {
     136: {"violet": 10, "yellow": 8, "pink": 8, "blue": 10}, 137: {"violet": 10, "purple": 8, "teal": 10},
     138: {"violet": 12, "red": 30, "green": 20, "blue": 15, "pink": 6}, 139: {"violet": 14, "teal": 12, "orange": 8, "yellow": 8},
     140: {"boss": "teal"},
+    160: {"boss": "pink"},
     # 141-159: every enemy type in mixed waves (never more than 100), building up to wave 160
     141: {"red": 30, "green": 20, "pink": 8}, 142: {"blue": 15, "teal": 10, "violet": 6},
     143: {"orange": 10, "yellow": 10, "red": 25}, 144: {"purple": 8, "pink": 10, "green": 25},
@@ -3326,7 +3331,14 @@ BOSSES = {
                "speed": 0.0, "minions": {}, "minimap": (250, 225, 60), "reward": 1000},
     "teal": {"name": "TEAL BOSS", "color": (40, 215, 200), "title": ((210, 255, 250), (30, 190, 175)), "bar": (60, 225, 210),
              "speed": 0.0, "minions": {}, "minimap": (70, 235, 220), "reward": 1500, "health": 200},
+    "pink": {"name": "PINK BOSS", "color": (255, 105, 180), "title": ((255, 225, 240), (235, 70, 150)), "bar": (255, 120, 190),
+             "speed": 0.0, "minions": {}, "minimap": (255, 130, 200), "reward": 2000, "health": 200},
 }
+PINK_BOSS_START_WAIT = 3.0      # Waits this long at the start
+PINK_BOSS_AIM_TIME = 1.0        # Shows where he's going for this long...
+PINK_BOSS_REST_TIME = 0.5       # ...and rests this long after each dash
+PINK_BOSS_DASH_SPEED = 9000     # Pixels per second: so fast it's nearly a teleport
+PINK_BOSS_SPAWN_AT_175 = {"pink": 30, "blue": 50, "teal": 25}
 # Orange Boss: four laser guns on a turret, in four stages, with a shielded laser-lines event at 75, 50 and 25.
 YELLOW_BOSS_ORB_DISTANCE = BOSS_RADIUS + 70
 YELLOW_BOSS_ORB_RADIUS = 30
@@ -3460,6 +3472,8 @@ def spawn_boss(kind):
         active_boss["shielded"] = True
     if kind == "teal":
         active_boss.update({"phase": "start", "timer": TEAL_BOSS_START_WAIT, "blink_phase": 0.0, "events_done": []})
+    if kind == "pink":
+        active_boss.update({"phase": "start", "timer": PINK_BOSS_START_WAIT, "events_done": [], "target": None})
     if kind == "yellow":
         active_boss.update({"slots": [1.0, 1.0, 1.0, 1.0], "spin": 0.0, "throw_timer": YELLOW_BOSS_THROW_EVERY,
                             "events_done": [], "event": None, "barrage_fired": 0, "barrage_timer": 0.0,
@@ -3475,6 +3489,125 @@ def spawn_boss(kind):
         boss_push[:] = [math.cos(a) * 26, math.sin(a) * 26]
         active_boss["grace"] = 1.0  # Can't hurt the player while they slide out
 
+def pink_boss_pick_target(boss):
+    """Where his next dash ends: along the line to the nearest player, twice as far as they are (stopped by the barrier)."""
+    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+    px, py = tx + player_size / 2, ty + player_size / 2
+    dx, dy = px - boss["x"], py - boss["y"]
+    distance = math.hypot(dx, dy) or 1.0
+    boss["angle"] = math.atan2(dy, dx)
+    reach = 2 * distance
+    margin = BOSS_RADIUS + 12
+    for limit, d, pos in ((MAP_WIDTH - margin, dx, boss["x"]), (MAP_HEIGHT - margin, dy, boss["y"])):
+        if d > 1e-9:
+            reach = min(reach, (limit - pos) / (d / distance))
+        elif d < -1e-9:
+            reach = min(reach, (margin - pos) / (d / distance))
+    reach = max(0.0, reach)
+    boss["target"] = (boss["x"] + dx / distance * reach, boss["y"] + dy / distance * reach)
+
+def pink_dash_step(boss, dt, target, can_hit=True):
+    """Move toward target at dash speed. Hits the player anywhere along the way. True once he gets there."""
+    sx, sy = boss["x"], boss["y"]
+    tx, ty = target
+    gap = math.hypot(tx - sx, ty - sy)
+    step = PINK_BOSS_DASH_SPEED * dt
+    if gap <= step:
+        boss["x"], boss["y"] = tx, ty
+    else:
+        boss["x"] += (tx - sx) / gap * step
+        boss["y"] += (ty - sy) / gap * step
+    boss["trail"].append((sx, sy, 0.0))
+    if can_hit and not game_over and not player_safe() and boss["grace"] == 0:
+        px, py = player_x + player_size / 2, player_y + player_size / 2
+        if point_to_segment_distance(px, py, sx, sy, boss["x"], boss["y"]) < BOSS_RADIUS + player_size / 2 - 6:
+            player_hit()
+    return gap <= step
+
+def update_pink_boss(boss, dt):
+    """3 s start -> aim (path shown) 1 s -> dash (nearly instant) -> rest 0.5 s -> aim... At 175: dash away and vanish."""
+    boss["timer"] -= dt
+    phase = boss["phase"]
+    if phase == "start":
+        if boss["timer"] <= 0:
+            pink_boss_pick_target(boss)
+            boss["phase"], boss["timer"] = "aim", PINK_BOSS_AIM_TIME
+    elif phase == "aim":
+        if boss["timer"] <= 0:
+            boss["phase"] = "dash"
+    elif phase == "dash":
+        if pink_dash_step(boss, dt, boss["target"]):
+            boss["phase"], boss["timer"] = "rest", PINK_BOSS_REST_TIME
+    elif phase == "rest":
+        if boss["timer"] <= 0:
+            pink_boss_pick_target(boss)
+            boss["phase"], boss["timer"] = "aim", PINK_BOSS_AIM_TIME
+    elif phase == "exit":
+        if pink_dash_step(boss, dt, boss["target"], can_hit=False):
+            boss["phase"] = "gone"  # Off the map: vanished
+            spawn_minions_any(PINK_BOSS_SPAWN_AT_175)
+    elif phase == "gone":
+        if not any_enemies_alive():
+            # (Not designed yet: for now he comes back to the middle and dashes again once they're all dead)
+            boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
+            effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.5, "color": BOSSES["pink"]["color"], "size": 3.5})
+            boss["phase"], boss["timer"] = "rest", 1.5
+
+def pink_boss_start_exit(boss):
+    """At 175: he dashes off the map, straight away from the player, and vanishes."""
+    boss["events_done"].append(175)
+    boss["health"] = 175
+    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+    dx, dy = boss["x"] - (tx + player_size / 2), boss["y"] - (ty + player_size / 2)
+    distance = math.hypot(dx, dy) or 1.0
+    boss["angle"] = math.atan2(dy, dx)
+    far = math.hypot(MAP_WIDTH, MAP_HEIGHT) + BOSS_RADIUS * 3  # Well past the barrier
+    boss["target"] = (boss["x"] + dx / distance * far, boss["y"] + dy / distance * far)
+    boss["phase"] = "exit"
+
+def pink_boss_visible(boss):
+    return boss["phase"] not in ("gone",)
+
+def draw_pink_dash_path(boss, cx, cy):
+    """His path: a chain of glowing pink diamonds racing out toward where he'll stop, and a spinning
+    crosshair ring where he lands - different from the Green Boss's filled lane."""
+    tx, ty = boss["target"]
+    ex, ey = tx - camera_x, ty - camera_y
+    charge = 1 - max(0.0, boss["timer"]) / PINK_BOSS_AIM_TIME
+    now = pygame.time.get_ticks() / 1000
+    length = math.hypot(ex - cx, ey - cy)
+    if length < 1:
+        return
+    ux, uy = (ex - cx) / length, (ey - cy) / length
+    layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    nx, ny = -uy, ux
+    for side in (-1, 1):  # Dashed edges showing how wide he is: anything between them gets hit
+        ox, oy = nx * BOSS_RADIUS * side, ny * BOSS_RADIUS * side
+        for k in range(int(length // 40) + 1):
+            d0, d1 = k * 40, min(length, k * 40 + 22)
+            pygame.draw.line(layer, (255, 200, 235, int(120 + 110 * charge)),
+                             (cx + ux * d0 + ox, cy + uy * d0 + oy), (cx + ux * d1 + ox, cy + uy * d1 + oy), 4)
+    spacing = 70
+    lit_to = length * min(1.0, charge * 1.4)  # The chevrons light up from him outward
+    for k in range(int(length // spacing) + 1):
+        d = (k * spacing + now * 320) % (length + 1)
+        x, y = cx + ux * d, cy + uy * d
+        if not (-60 < x < WIDTH + 60 and -60 < y < HEIGHT + 60):
+            continue
+        lit = d <= lit_to
+        size = 26 if lit else 18
+        color = (255, 120, 200, 245) if lit else (255, 190, 230, 150)
+        tip = (x + ux * size * 0.6, y + uy * size * 0.6)
+        pygame.draw.lines(layer, color, False, [(x - ux * size * 0.4 + nx * size, y - uy * size * 0.4 + ny * size), tip,
+                                                  (x - ux * size * 0.4 - nx * size, y - uy * size * 0.4 - ny * size)], 7)
+    ring = BOSS_RADIUS * (1.25 - 0.25 * charge)
+    pygame.draw.circle(layer, (255, 150, 215, int(60 + 80 * charge)), (ex, ey), BOSS_RADIUS)
+    pygame.draw.circle(layer, (255, 235, 248, 240), (ex, ey), ring, 5)
+    for k in range(4):  # Spinning crosshair ticks
+        a = now * 4 + k * math.pi / 2
+        pygame.draw.line(layer, (255, 235, 248, 240), (ex + math.cos(a) * (ring - 18), ey + math.sin(a) * (ring - 18)),
+                         (ex + math.cos(a) * (ring + 18), ey + math.sin(a) * (ring + 18)), 6)
+    screen.blit(layer, (0, 0))
 def boss_dash_length(boss):
     """How far the dash can go before the boss would hit the barrier."""
     return max(0.0, min(GREEN_DASH_LENGTH, laser_reach(boss["x"], boss["y"], boss["angle"]) - BOSS_RADIUS))
@@ -3514,6 +3647,8 @@ def update_boss(dt):
             update_yellow_boss(boss, dt)
         elif boss["kind"] == "teal":
             update_teal_boss(boss, dt)
+        elif boss["kind"] == "pink":
+            update_pink_boss(boss, dt)
         else:
             distance = math.hypot(tx - boss["x"], ty - boss["y"])
             if distance > 1:
@@ -3527,6 +3662,8 @@ def update_boss(dt):
     touching = math.hypot(px - boss["x"], py - boss["y"]) < BOSS_RADIUS + player_size / 2 - 6
     if boss["kind"] == "teal":
         touching = False  # He lands right on you on purpose - only his explosion hurts
+    if boss["kind"] == "pink" and boss["phase"] in ("gone", "exit"):
+        touching = False
     if touching and not game_over and not player_safe() and boss["grace"] == 0 and boss_push == [0.0, 0.0]:
         player_hit()
 
@@ -3641,6 +3778,8 @@ def boss_take_bullet(bullet):
         return False
     if active_boss["kind"] == "purple":
         return purple_boss_take_bullet(active_boss, bullet)
+    if active_boss["kind"] == "pink" and not pink_boss_visible(active_boss):
+        return False  # Gone off the map
     if active_boss["kind"] == "teal" and not teal_boss_visible(active_boss):
         return False  # Invisible: shots go straight through where he was
     if active_boss["kind"] == "yellow":
@@ -4275,6 +4414,14 @@ def hurt_boss(amount=1, force=False):
         elif boss["health"] <= 25 and 25 not in boss["events_done"] and boss["health"] > 0:
             teal_boss_start_guard(boss, 25)
         amount = 0
+    if boss["kind"] == "pink" and not force:
+        if boss["phase"] in ("exit", "gone"):
+            return
+        boss["health"] -= amount
+        boss["flash"] = 0.08
+        if boss["health"] <= 175 and 175 not in boss["events_done"] and boss["health"] > 0:
+            pink_boss_start_exit(boss)
+        amount = 0
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
             boss["ripple"] = 0.25
@@ -4388,6 +4535,13 @@ def draw_boss():
         return
     info = BOSSES[boss["kind"]]
     cx, cy = boss["x"] - camera_x, boss["y"] - camera_y
+    if boss["kind"] == "pink":
+        if boss["phase"] == "gone":
+            return
+        if boss["phase"] == "aim" and boss.get("target"):
+            draw_pink_dash_path(boss, cx, cy)
+            cx += random.uniform(-2, 2) * (1 - boss["timer"] / PINK_BOSS_AIM_TIME)
+            cy += random.uniform(-2, 2) * (1 - boss["timer"] / PINK_BOSS_AIM_TIME)
     if boss["kind"] == "green" and boss["state"] == "aim":
         draw_green_dash_path(boss, cx, cy)
         cx += random.uniform(-3, 3) * (1 - boss["timer"] / GREEN_AIM_TIME)  # Shakes as it winds up
