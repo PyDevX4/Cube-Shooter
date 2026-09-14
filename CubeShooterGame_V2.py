@@ -5,6 +5,9 @@ import math
 import random
 import time
 import atexit
+import base64
+import json
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # So the game finds cube_accounts.py next to it
 import cube_accounts
@@ -913,10 +916,16 @@ def enemy_killed(ex, ey, kind):
     cx, cy = ex + player_size // 2, ey + player_size // 2
     spawn_death_effect(cx, cy, kind)
     sounds.play("enemy_death")
+    role = net_role()
+    if role == "guest":
+        recent_local_kills.append((kind, ex, ey, time.monotonic()))  # Coin and points come from the host
+        return
+    if role == "host":
+        net_events.append(["kill", round(cx, 1), round(cy, 1), kind])
     if not in_shooting_range:
         drop_coin(cx, cy)
     if in_block_defence:
-        globals()["block_defence_points"] += 1
+        globals()["block_defence_points"] += 1  # Shared by the whole team
 
 # ---- Game over sequence ----
 death_snapshot = None  # Picture of the world (no HUD, no player) taken the moment the player dies
@@ -2302,12 +2311,13 @@ def update_orange_enemies(dt):
     the barrier and slowly swings after the player. It pulls the laser back in if the player gets far away."""
     frozen = has_freeze and equipped_ability == 'freeze' and freeze_active
     half = player_size / 2
-    target_x, target_y = enemy_target()
-    px, py = target_x + half, target_y + half
+    lpx, lpy = player_x + half, player_y + half  # You (for getting hit)
     attack_range = BLOCK_ORANGE_RANGE if in_block_defence else ORANGE_ATTACK_RANGE
     for enemy in orange_enemies:
         if frozen:
             continue  # Frozen solid: no walking, turning or firing (and the laser can't hurt you)
+        target_x, target_y = enemy_target(enemy["x"], enemy["y"])
+        px, py = target_x + half, target_y + half
         cx, cy = enemy["x"] + half, enemy["y"] + half
         distance = math.hypot(px - cx, py - cy)
         to_player = math.atan2(py - cy, px - cx)
@@ -2344,12 +2354,12 @@ def update_orange_enemies(dt):
         enemy["drawn"] = enemy["beam"] if stopped is None else stopped
         if game_over or player_safe():
             continue
-        if distance < player_size:  # Touching the enemy itself
+        if math.hypot(lpx - cx, lpy - cy) < player_size:  # Touching the enemy itself
             player_hit()
         elif enemy["firing"] and enemy["beam"] > 0 and stopped is None:
             end_x = start_x + math.cos(enemy["angle"]) * enemy["beam"]
             end_y = start_y + math.sin(enemy["angle"]) * enemy["beam"]
-            if point_to_segment_distance(px, py, start_x, start_y, end_x, end_y) < half + ORANGE_BEAM_WIDTH / 2:
+            if point_to_segment_distance(lpx, lpy, start_x, start_y, end_x, end_y) < half + ORANGE_BEAM_WIDTH / 2:
                 player_hit()
 
 def draw_orange_enemies():
@@ -2430,6 +2440,8 @@ def yellow_orb_position(enemy):
 storm_spawn_seconds = {}  # Barrier Shrink: the last whole second each kind of enemy spawned
 
 def storm_spawn_due(kind, interval):
+    if net_role() == "guest":
+        return False  # The host spawns; this game shows what the host sends
     """True once per matching second: every `interval` seconds of the Barrier Shrink timer."""
     second = int(game_timer)
     if second > 0 and second % interval == 0 and storm_spawn_seconds.get(kind) != second:
@@ -2541,12 +2553,11 @@ def update_pink_enemies(dt):
     """Pinks dash along diagonals only, like the Green Boss's dash: a quick diagonal dash, a 0.3 s stop, then the next dash - zigzagging toward the player."""
     if has_freeze and equipped_ability == 'freeze' and freeze_active:
         return
-    target_x, target_y = enemy_target()
     for enemy in pink_enemies:
         enemy["trail"] = [(x, y, age + dt) for x, y, age in enemy["trail"] if age + dt < 0.2]
         if enemy["state"] == "pause":
             if enemy["timer"] == 0.0 or "next" not in enemy:
-                enemy["next"] = pink_pick_diagonal(enemy, target_x, target_y)
+                enemy["next"] = pink_pick_diagonal(enemy, *enemy_target(enemy["x"], enemy["y"]))
             enemy["timer"] += dt
             if enemy["timer"] >= PINK_PAUSE:
                 enemy["dir"] = enemy.pop("next")
@@ -2607,9 +2618,9 @@ def update_teal_enemies(dt):
     if has_freeze and equipped_ability == 'freeze' and freeze_active:
         return
     half = player_size / 2
-    target_x, target_y = enemy_target()
-    px, py = target_x + half, target_y + half
     for enemy in teal_enemies[:]:
+        target_x, target_y = enemy_target(enemy["x"], enemy["y"])
+        px, py = target_x + half, target_y + half
         cx, cy = enemy["x"] + half, enemy["y"] + half
         distance = math.hypot(px - cx, py - cy)
         if enemy["fuse"] is None:
@@ -2695,8 +2706,9 @@ def update_yellow_enemies(dt):
     if has_freeze and equipped_ability == 'freeze' and freeze_active:
         return
     half = player_size / 2
-    px, py = player_x + half, player_y + half
     for enemy in yellow_enemies:
+        target_x, target_y = nearest_player(enemy["x"], enemy["y"])
+        px, py = target_x + half, target_y + half
         cx, cy = enemy["x"] + half, enemy["y"] + half
         distance = math.hypot(px - cx, py - cy)
         if distance > 1:
@@ -2730,7 +2742,8 @@ def curve_flung_orb(shot, dt):
     shot["curve_time"] -= dt
     size = shot_size(shot)
     heading = math.atan2(shot["dy"], shot["dx"])
-    target = math.atan2(player_y + player_size / 2 - (shot["y"] + size / 2), player_x + player_size / 2 - (shot["x"] + size / 2))
+    aim_x, aim_y = nearest_player(shot["x"], shot["y"])
+    target = math.atan2(aim_y + player_size / 2 - (shot["y"] + size / 2), aim_x + player_size / 2 - (shot["x"] + size / 2))
     heading = turn_toward(heading, target, YELLOW_CURVE)
     speed = math.hypot(shot["dx"], shot["dy"])
     shot["dx"], shot["dy"] = math.cos(heading) * speed, math.sin(heading) * speed
@@ -2948,15 +2961,34 @@ def handle_block_menu_event(event):
         return
     for (health, cost), button in zip(BLOCK_REPAIRS, buttons):
         if button.collidepoint(pos) and block_defence_points >= cost and block_health < BLOCK_MAX_HEALTH:
+            if net_role() == "guest":
+                net.relay({"k": MULTIPLAYER_REPAIR_REQUEST, "i": BLOCK_REPAIRS.index((health, cost))}, to=net.lobby["host"])
+                sounds.play("buy")
+                continue
             block_defence_points -= cost
             sounds.play("buy")
             block_health = min(BLOCK_MAX_HEALTH, block_health + health)
 
-def enemy_target():
-    """Where enemies head (as a top-left position like theirs): the block in Block Defence, otherwise the player."""
+def living_players():
+    """Top-left positions of every player still alive in this game: you, plus the others in a multiplayer match."""
+    found = [] if game_over else [(player_x, player_y)]
+    if multiplayer_match:
+        found += [(p["x"], p["y"]) for p in remote_players.values() if not p.get("dead")]
+    return found or [(player_x, player_y)]
+
+def nearest_player(x=None, y=None):
+    """The living player closest to (x, y) (top-left positions). With no position: you if alive."""
+    players = living_players()
+    if x is None or len(players) == 1:
+        return players[0]
+    return min(players, key=lambda p: (p[0] - x) ** 2 + (p[1] - y) ** 2)
+
+def enemy_target(ex=None, ey=None):
+    """Where an enemy at (ex, ey) heads (top-left position like theirs): the block in Block Defence,
+    otherwise the nearest living player."""
     if in_block_defence:
         return BLOCK_DEFENCE_BLOCK_RECT.centerx - player_size / 2, BLOCK_DEFENCE_BLOCK_RECT.centery - player_size / 2
-    return player_x, player_y
+    return nearest_player(ex, ey)
 
 def damage_block(amount=1):
     global block_health, block_hit_flash
@@ -3246,11 +3278,13 @@ def update_boss(dt):
     boss["ripple"] = max(0.0, boss["ripple"] - dt)
     boss["grace"] = max(0.0, boss["grace"] - dt)
     px, py = player_x + player_size / 2, player_y + player_size / 2
+    target_x, target_y = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+    tx, ty = target_x + player_size / 2, target_y + player_size / 2
     frozen = has_freeze and equipped_ability == 'freeze' and freeze_active
     boss["trail"] = [(x, y, age + dt) for x, y, age in boss["trail"] if age + dt < 0.35]
     if not frozen:
         if boss["kind"] == "green":
-            update_green_boss(boss, dt, px, py)
+            update_green_boss(boss, dt, tx, ty)
         elif boss["kind"] == "blue":
             update_blue_boss(boss, dt)
         elif boss["kind"] == "purple":
@@ -3262,10 +3296,10 @@ def update_boss(dt):
         elif boss["kind"] == "teal":
             update_teal_boss(boss, dt)
         else:
-            distance = math.hypot(px - boss["x"], py - boss["y"])
+            distance = math.hypot(tx - boss["x"], ty - boss["y"])
             if distance > 1:
-                boss["x"] += (px - boss["x"]) / distance * info["speed"]
-                boss["y"] += (py - boss["y"]) / distance * info["speed"]
+                boss["x"] += (tx - boss["x"]) / distance * info["speed"]
+                boss["y"] += (ty - boss["y"]) / distance * info["speed"]
     if boss["kind"] in ("red", "green") and boss["enraged"] and not minions_alive(info["minions"]):
         spawn_minions(info["minions"])  # At half health, and again whenever they've all been killed
     touching = math.hypot(px - boss["x"], py - boss["y"]) < BOSS_RADIUS + player_size / 2 - 6
@@ -3396,7 +3430,10 @@ def boss_take_bullet(bullet):
                     spawn_shot_clash(bx, by)
                     return True
     if bullet_hits_boss(bullet):
-        hurt_boss(1)
+        if net_role() == "guest":
+            active_boss["flash"] = 0.08  # The host's game takes the health off
+        else:
+            hurt_boss(1)
         return True
     return False
 
@@ -3568,8 +3605,9 @@ def update_teal_boss(boss, dt):
             boss["phase"], boss["timer"] = "hidden", TEAL_BOSS_VANISH_WAIT
     elif boss["phase"] == "hidden":
         if boss["timer"] <= 0:
-            # Teleport right onto the player
-            boss["x"], boss["y"] = player_x + player_size / 2, player_y + player_size / 2
+            # Teleport right onto a player (any living one, in multiplayer)
+            victim_x, victim_y = random.choice(living_players())
+            boss["x"], boss["y"] = victim_x + player_size / 2, victim_y + player_size / 2
             boss["fuse_len"] = teal_boss_fuse(boss)
             boss["phase"], boss["timer"], boss["blink_phase"] = "fuse", boss["fuse_len"], 0.0
             effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.3, "color": (80, 255, 235), "size": 2.0})
@@ -3617,8 +3655,9 @@ def teal_boss_fuse(boss):
 def teal_boss_throw(boss):
     """Throw 3 teals, already ticking, each flying straight to a random spot scattered around the player."""
     half = player_size / 2
-    px, py = player_x + half, player_y + half
     for _ in range(TEAL_BOSS_THROW_COUNT):
+        victim_x, victim_y = random.choice(living_players())  # Each teal lands near one of the players
+        px, py = victim_x + half, victim_y + half
         a = random.uniform(0, 2 * math.pi)
         r = random.uniform(0, TEAL_BOSS_THROW_SCATTER)
         teal = new_teal_enemy(boss["x"] - half, boss["y"] - half)
@@ -4804,6 +4843,18 @@ def reset_remote_players():
 def in_multiplayer_game():
     return multiplayer_match and not (start_screen or hub_open or login_screen_open)
 
+net_shot_outbox = []  # Our shots fired since the last update
+
+def collect_new_shots():
+    """Note every shot we've fired that the others haven't heard about. Runs before shots can hit anything,
+    so even a point-blank hit still reaches the other games."""
+    if not multiplayer_match:
+        return
+    for bullet in bullets:
+        if not bullet.get("sent"):
+            bullet["sent"] = True
+            net_shot_outbox.append([round(bullet["x"], 1), round(bullet["y"], 1), round(bullet["dx"], 2), round(bullet["dy"], 2)])
+
 def send_player_state(dt):
     """Tell the others where we are, where we aim, our skin, and any shots fired since the last update."""
     global net_send_timer
@@ -4811,11 +4862,9 @@ def send_player_state(dt):
     if net_send_timer > 0:
         return
     net_send_timer = NET_SEND_EVERY
-    shots = []
-    for bullet in bullets:
-        if not bullet.get("sent"):
-            bullet["sent"] = True
-            shots.append([round(bullet["x"], 1), round(bullet["y"], 1), round(bullet["dx"], 2), round(bullet["dy"], 2)])
+    collect_new_shots()
+    shots = net_shot_outbox[:]
+    net_shot_outbox.clear()
     net.relay({"k": "p", "x": round(player_x, 1), "y": round(player_y, 1), "a": round(last_rot_angle, 3),
                "s": current_skin, "d": bool(game_over), "b": shots})
 
@@ -4831,7 +4880,8 @@ def receive_player_state(name, data):
                    "skin": str(data.get("s", "white")), "dead": bool(data.get("d"))})
     for shot in data.get("b", [])[:20]:
         bx, by, dx, dy = (float(v) for v in shot[:4])
-        remote_bullets.append({"x": bx, "y": by, "dx": dx, "dy": dy, "age": 0})
+        # Already "sent" so it isn't passed on again; its owner is who fired it
+        bullets.append({"x": bx, "y": by, "dx": dx, "dy": dy, "sent": True, "owner": name, "age": 0})
 
 def update_remote_players():
     """Smooth each other player toward their latest position, and move their shots along."""
@@ -4845,11 +4895,6 @@ def update_remote_players():
         k = min(1.0, (now - player["since"]) / (NET_SEND_EVERY * 1.2))
         player["x"] = player["from_x"] + (player["to_x"] - player["from_x"]) * k
         player["y"] = player["from_y"] + (player["to_y"] - player["from_y"]) * k
-    for shot in remote_bullets:
-        shot["x"] += shot["dx"]
-        shot["y"] += shot["dy"]
-        shot["age"] += 1
-    remote_bullets[:] = [s for s in remote_bullets if s["age"] < 150]
 
 def draw_remote_players():
     for name, player in remote_players.items():
@@ -4870,9 +4915,113 @@ def draw_remote_players():
         pygame.draw.rect(screen, (20, 24, 32), box, border_radius=6)
         screen.blit(tag, tag.get_rect(center=box.center))
 
-def draw_remote_bullets():
-    for shot in remote_bullets:
-        draw_laser("player", shot["x"] - camera_x + bullet_size / 2, shot["y"] - camera_y + bullet_size / 2, shot["dx"], shot["dy"])
+# ---- The shared world: the host sends it, everyone else shows it ----
+NET_WORLD_EVERY = 0.1          # The host sends the whole world 10 times a second
+net_world_timer = 0.0
+net_events = []                # Host: things that happened since the last send (kills, finished waves)
+recent_local_kills = []        # Not the host: enemies we just shot, so the next world update doesn't bring them back
+MULTIPLAYER_REPAIR_REQUEST = "repair"
+
+def net_role():
+    """ "host" or "guest" during a multiplayer match, else None."""
+    if not multiplayer_match:
+        return None
+    return "host" if net.is_host else "guest"
+
+def json_safe(value):
+    if isinstance(value, (set, tuple)):
+        return list(value)
+    raise TypeError("can't send %r" % type(value))
+
+def pack_world():
+    world = {
+        "wave": wave, "timer": round(game_timer, 2),
+        "red": red_enemies, "green": green_enemies, "blue": blue_enemies,
+        "purple": purple_enemies, "minis": purple_mini_circles,
+        "orange": orange_enemies, "yellow": yellow_enemies, "teal": teal_enemies,
+        "pink": pink_enemies, "violet": violet_enemies,
+        "boss": active_boss, "shots": blue_bullets,
+        "storm": [storm_survival_map_width, storm_survival_map_height, globals().get("storm_survival_won", False)],
+        "block": [globals().get("block_health", 0), globals().get("block_defence_points", 0)],
+        "events": net_events,
+    }
+    raw = json.dumps(world, default=json_safe, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(zlib.compress(raw, 6)).decode("ascii")
+
+def send_world(dt):
+    global net_world_timer
+    net_world_timer -= dt
+    if net_world_timer > 0:
+        return
+    net_world_timer = NET_WORLD_EVERY
+    net.relay({"k": "w", "z": pack_world()})
+    net_events.clear()
+
+def recently_shot(kind, x, y):
+    now = time.monotonic()
+    return any(k == kind and now - when < 0.6 and abs(x - kx) < 40 and abs(y - ky) < 40
+               for k, kx, ky, when in recent_local_kills)
+
+def apply_world(packed):
+    """Not the host: replace this game's enemies, boss and enemy shots with the host's."""
+    global wave, game_timer, active_boss, storm_survival_map_width, storm_survival_map_height, storm_survival_won
+    global block_health, block_defence_points
+    world = json.loads(zlib.decompress(base64.b64decode(packed)))
+    now = time.monotonic()
+    recent_local_kills[:] = [k for k in recent_local_kills if now - k[3] < 0.6]
+    keep = lambda kind, items, pos: [e for e in items if not recently_shot(kind, *pos(e))]
+    red_enemies[:] = keep("red", world["red"], lambda e: e)
+    green_enemies[:] = keep("green", world["green"], lambda e: e)
+    blue_enemies[:] = keep("blue", world["blue"], lambda e: e)
+    blue_last_shot_times[:] = [pygame.time.get_ticks() / 1000] * len(blue_enemies)  # Their shots come from the host
+    pairs = [(p, m) for p, m in zip(world["purple"], world["minis"]) if not recently_shot("purple", *p)]
+    purple_enemies[:] = [p for p, _ in pairs]
+    purple_mini_circles[:] = [m for _, m in pairs]
+    for kind, group in (("orange", orange_enemies), ("yellow", yellow_enemies), ("teal", teal_enemies),
+                        ("pink", pink_enemies), ("violet", violet_enemies)):
+        group[:] = keep(kind, world[kind], lambda e: (e["x"], e["y"]))
+    active_boss = world["boss"]
+    blue_bullets[:] = world["shots"]
+    wave, game_timer = world["wave"], world["timer"]
+    storm_survival_map_width, storm_survival_map_height, storm_survival_won = world["storm"]
+    block_health, block_defence_points = world["block"]
+    for event in world["events"]:
+        apply_world_event(event)
+
+def apply_world_event(event):
+    """Not the host: something happened in the host's game."""
+    global coin_count, main_game_coins, best_wave, wave_completion_message, wave_completion_timer, block_defence_coins
+    kind = event[0]
+    if kind == "kill":
+        _, x, y, enemy = event
+        if not in_shooting_range:
+            drop_coin(x, y)  # Everyone gets their own coin from every kill
+        if not any(k == enemy and abs(x - player_size / 2 - kx) < 40 and abs(y - player_size / 2 - ky) < 40
+                   for k, kx, ky, _ in recent_local_kills):
+            spawn_death_effect(x, y, enemy)  # We didn't already see it burst
+            sounds.play("enemy_death")
+    elif kind == "wave":
+        _, reward, boss_wave, number = event
+        wave_completion_message = "Boss Wave Completed!" if boss_wave else f"Wave {number} Complete!"
+        wave_completion_timer = wave_completion_duration
+        sounds.play("boss_wave_complete" if boss_wave else "wave_complete")
+        best_wave = max(best_wave, number)
+        coin_count += reward
+        main_game_coins = coin_count
+
+def receive_world_message(name, data):
+    """Handle a game message from another player (not a position update)."""
+    global block_defence_points, block_health
+    kind = data.get("k")
+    if kind == "w" and net_role() == "guest" and name == net.lobby.get("host"):
+        apply_world(data["z"])
+    elif kind == MULTIPLAYER_REPAIR_REQUEST and net_role() == "host" and in_block_defence:
+        index = int(data.get("i", -1))
+        if 0 <= index < len(BLOCK_REPAIRS):
+            health, cost = BLOCK_REPAIRS[index]
+            if block_defence_points >= cost and block_health < BLOCK_MAX_HEALTH:  # Points are shared
+                block_defence_points -= cost
+                block_health = min(BLOCK_MAX_HEALTH, block_health + health)
 
 def lobby_panel():
     left = PLAY_CENTER_X + 300
@@ -4924,23 +5073,38 @@ def update_multiplayer():
             net.create_lobby()  # Pressing Multiplayer opens your own lobby straight away
         elif kind == "relay":
             data = msg.get("d")
-            if isinstance(data, dict) and data.get("k") == "p" and multiplayer_match:
+            if isinstance(data, dict) and multiplayer_match:
                 try:
-                    receive_player_state(str(msg.get("from")), data)
-                except (TypeError, ValueError):
-                    pass  # A garbled update: skip it
+                    if data.get("k") == "p":
+                        receive_player_state(str(msg.get("from")), data)
+                    else:
+                        receive_world_message(str(msg.get("from")), data)
+                except (TypeError, ValueError, KeyError, AttributeError, zlib.error) as err:
+                    if os.environ.get("CUBE_SHOOTER_NETDEBUG"):
+                        print("bad multiplayer update:", repr(err), flush=True)
         elif kind == "start":
             reset_remote_players()
+            net_shot_outbox.clear()
+            net_events.clear()
+            recent_local_kills.clear()
             selected_mode = msg.get("mode", selected_mode)
             if msg.get("map") in MAP_NAMES:
                 selected_map = msg["map"]
             start_selected_mode()
             multiplayer_match = True
         elif kind in ("end", "disconnected"):
+            if multiplayer_match and not (start_screen or hub_open):
+                multiplayer_match = False
+                exit_to_main_menu()  # The match is over (or the host left): back to the lobby
+                globals().update(start_screen=False, hub_open=True, hub_tab="Play")
             multiplayer_match = False
             reset_remote_players()
     if in_multiplayer_game():
-        send_player_state(globals().get("dt", 1 / 60))
+        frame_dt = globals().get("dt", 1 / 60)
+        globals().update(game_paused=False, pause_countdown=0.0)  # The world keeps going for everyone
+        send_player_state(frame_dt)
+        if net_role() == "host":
+            send_world(frame_dt)
         update_remote_players()
     lobby = net.lobby
     if not play_multiplayer or lobby is None:
@@ -5106,6 +5270,7 @@ def handle_play_tab_click(pos):
             return
     if PLAY_BUTTON.collidepoint(pos):
         if play_multiplayer and net.lobby:
+            net.send_settings(selected_mode, selected_map)  # Make sure the lobby has the latest pick first
             net.start_match()  # Everyone in the lobby starts together
         elif not play_multiplayer:
             start_selected_mode()
@@ -5468,15 +5633,18 @@ def get_safe_enemy_spawn():
     low_x, high_x = left + barrier_thickness, max(left + barrier_thickness, right - player_size - barrier_thickness)
     low_y, high_y = top + barrier_thickness, max(top + barrier_thickness, bottom - player_size - barrier_thickness)
     px, py = player_x + player_size / 2, player_y + player_size / 2
-    # The player is always in the middle of the screen, so "off screen" is outside this box around them
-    view = pygame.Rect(0, 0, WIDTH + 2 * player_size + 120, HEIGHT + 2 * player_size + 120)
-    view.center = (px, py)
+    # Players are always in the middle of their screens, so "off screen" is outside this box around every player
+    views = []
+    for top_x, top_y in ([(player_x, player_y)] + ([(p["x"], p["y"]) for p in remote_players.values()] if multiplayer_match else [])):
+        view = pygame.Rect(0, 0, WIDTH + 2 * player_size + 120, HEIGHT + 2 * player_size + 120)
+        view.center = (top_x + player_size / 2, top_y + player_size / 2)
+        views.append(view)
     best, best_dist = None, -1.0
     for _ in range(300):
         ex, ey = random.randint(low_x, high_x), random.randint(low_y, high_y)
-        if not view.collidepoint(ex + player_size / 2, ey + player_size / 2):
+        if not any(view.collidepoint(ex + player_size / 2, ey + player_size / 2) for view in views):
             return [ex, ey]
-        dist = math.hypot(ex + player_size / 2 - px, ey + player_size / 2 - py)
+        dist = min(math.hypot(ex + player_size / 2 - v.centerx, ey + player_size / 2 - v.centery) for v in views)
         if dist > best_dist:
             best, best_dist = [ex, ey], dist
     return best
@@ -6106,7 +6274,7 @@ while running:
 
         # Wave progression logic (only in main game, not shooting range, storm survival, or block defence)
         global wave_spawning
-        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial:
+        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and net_role() != "guest":
             # Only trigger wave spawn if all enemy lists are empty and not already spawning
             if (not wave_spawning and
                 len(red_enemies) == 0 and len(green_enemies) == 0 and len(blue_enemies) == 0 and
@@ -6123,6 +6291,8 @@ while running:
                     wave_completion_timer = wave_completion_duration
                     coin_count += wave_completion_reward
                     main_game_coins = coin_count
+                    if net_role() == "host":
+                        net_events.append(["wave", wave_completion_reward, finished_boss_wave, wave - 1])
                 wave_jump_pending = False
                 # Clear all enemies for new wave (should already be empty)
                 red_enemies.clear()
@@ -6182,9 +6352,10 @@ while running:
                         dx = block_center_x - ex
                         dy = block_center_y - ey
                     else:
-                        # Normal mode - enemies target the player
-                        dx = player_x - ex
-                        dy = player_y - ey
+                        # Normal mode - enemies target the nearest player
+                        target_x, target_y = nearest_player(ex, ey)
+                        dx = target_x - ex
+                        dy = target_y - ey
                     dist = math.hypot(dx, dy)
                     if dist != 0:
                         dx /= dist
@@ -6195,7 +6366,7 @@ while running:
 
                 for i in range(len(green_enemies)):
                     ex, ey = green_enemies[i]
-                    target_x, target_y = enemy_target()
+                    target_x, target_y = enemy_target(ex, ey)
                     dx = target_x - ex
                     dy = target_y - ey
                     dist = math.hypot(dx, dy)
@@ -6208,7 +6379,7 @@ while running:
 
                 for i in range(len(purple_enemies)):
                     ex, ey = purple_enemies[i]
-                    target_x, target_y = enemy_target()
+                    target_x, target_y = enemy_target(ex, ey)
                     dx = target_x - ex
                     dy = target_y - ey
                     dist = math.hypot(dx, dy)
@@ -6279,6 +6450,7 @@ while running:
                         enemy_killed(ex, ey, "purple")
                         kills += 1
 
+            collect_new_shots()
             bullets_to_remove = []
             for i, bullet in enumerate(bullets):
                 bullet["x"] += bullet["dx"]
@@ -6295,7 +6467,11 @@ while running:
                         continue
 
                 # Check if bullet is too far from player (world coordinates)
-                bullet_distance = math.hypot(bullet["x"] - player_x, bullet["y"] - player_y)
+                if bullet.get("owner"):
+                    bullet["age"] += 1
+                    bullet_distance = WIDTH * 3 if bullet["age"] > 150 else 0
+                else:
+                    bullet_distance = math.hypot(bullet["x"] - player_x, bullet["y"] - player_y)
                 if bullet_distance > WIDTH * 2:  # Remove bullets that are too far away
                     bullets_to_remove.append(i)
                     continue
@@ -6520,7 +6696,7 @@ while running:
         for idx, (ex, ey) in enumerate(blue_enemies):
             # Only move blue enemies if not paused, freeze is not active and not in editor mode
             if not game_paused and not (has_freeze and equipped_ability == 'freeze' and freeze_active) and not (in_shooting_range and shooting_range_editor_mode):
-                target_x, target_y = enemy_target()
+                target_x, target_y = enemy_target(ex, ey)
                 dx = target_x - ex
                 dy = target_y - ey
                 dist = math.hypot(dx, dy)
@@ -6535,12 +6711,13 @@ while running:
                 now = pygame.time.get_ticks() / 1000
                 while len(blue_last_shot_times) <= idx:
                     blue_last_shot_times.append(now)
-                in_range = math.hypot(enemy_target()[0] - ex, enemy_target()[1] - ey) <= BLUE_SHOOT_RANGE
+                aim_x, aim_y = enemy_target(ex, ey)
+                in_range = math.hypot(aim_x - ex, aim_y - ey) <= BLUE_SHOOT_RANGE
                 if in_range and now - blue_last_shot_times[idx] >= blue_shot_delay:
                     bx = ex + player_size // 2
                     by = ey + player_size // 2
-                    pdx = enemy_target()[0] + player_size // 2 - bx
-                    pdy = enemy_target()[1] + player_size // 2 - by
+                    pdx = aim_x + player_size // 2 - bx
+                    pdy = aim_y + player_size // 2 - by
                     pdist = math.hypot(pdx, pdy)
                     if pdist != 0:
                         pdx /= pdist
@@ -6576,7 +6753,8 @@ while running:
                     continue
 
             # Check if bullet is too far from player (world coordinates)
-            bullet_distance = math.hypot(b["x"] - player_x, b["y"] - player_y)
+            near_x, near_y = nearest_player(b["x"], b["y"]) if multiplayer_match else (player_x, player_y)
+            bullet_distance = math.hypot(b["x"] - near_x, b["y"] - near_y)
             if bullet_distance > WIDTH * 2 and "bounces" not in b:  # Remove bullets that are too far away
                 blue_bullets_to_remove.append(i)
                 continue
@@ -6747,8 +6925,6 @@ while running:
         # Drawn before the enemies so a freshly fired bolt comes out from under its shooter.
         for bullet in bullets:
             draw_laser("player", bullet["x"] - camera_x + bullet_size / 2, bullet["y"] - camera_y + bullet_size / 2, bullet["dx"], bullet["dy"])
-        if multiplayer_match:
-            draw_remote_bullets()
         for b in blue_bullets:
             if b.get("orb"):
                 ox, oy = b["x"] - camera_x + shot_size(b) / 2, b["y"] - camera_y + shot_size(b) / 2
@@ -7177,14 +7353,14 @@ while running:
                 storm_survival_won = False
                 # Spawn a red enemy every 2 seconds
                 red_spawn_interval = 2  # Every 2 seconds for the whole 3 minutes
-                if int(game_timer) % red_spawn_interval == 0 and game_timer > 0:
+                if int(game_timer) % red_spawn_interval == 0 and game_timer > 0 and net_role() != "guest":
                     # Only spawn if we haven't already spawned this second
                     if not hasattr(reset_game, 'last_red_spawn_second') or reset_game.last_red_spawn_second != int(game_timer):
                         red_enemies.append(get_safe_enemy_spawn())
                         reset_game.last_red_spawn_second = int(game_timer)
                 # Spawn a green or blue every 6 seconds for the first 90 seconds, then every 4 seconds
                 green_spawn_interval = 6 if game_timer < 90 else 4
-                if int(game_timer) % green_spawn_interval == 0 and game_timer > 0:
+                if int(game_timer) % green_spawn_interval == 0 and game_timer > 0 and net_role() != "guest":
                     # Only spawn if we haven't already spawned this second
                     if not hasattr(reset_game, 'last_green_spawn_second') or reset_game.last_green_spawn_second != int(game_timer):
                         if random.random() < 0.5:  # 50/50 green or blue
