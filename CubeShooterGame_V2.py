@@ -3335,7 +3335,7 @@ BOSSES = {
              "speed": 0.0, "minions": {}, "minimap": (255, 130, 200), "reward": 2000, "health": 200},
 }
 PINK_BOSS_START_WAIT = 3.0      # Waits this long at the start
-PINK_BOSS_AIM_TIME = 1.0        # Shows where he's going for this long...
+PINK_BOSS_AIM_TIME = 0.5        # Shows where he's going for this long...
 PINK_BOSS_REST_TIME = 0.5       # ...and rests this long after each dash
 PINK_BOSS_DASH_SPEED = 9000     # Pixels per second: so fast it's nearly a teleport
 PINK_BOSS_SPAWN_AT_175 = {"pink": 30, "blue": 50, "teal": 25}
@@ -3569,8 +3569,8 @@ def pink_boss_visible(boss):
     return boss["phase"] not in ("gone",)
 
 def draw_pink_dash_path(boss, cx, cy):
-    """His warning (nothing like the Green Boss's lane): a crackling pink lightning bolt to where he'll land,
-    hollow afterimages of him popping in along it one by one, and a spinning diamond closing in on the landing spot."""
+    """His warning: a crackling pink lightning bolt that shoots out of him toward where he'll land,
+    and a glowing circle there that shrinks down to his size."""
     tx, ty = boss["target"]
     ex, ey = tx - camera_x, ty - camera_y
     charge = 1 - max(0.0, boss["timer"]) / PINK_BOSS_AIM_TIME
@@ -3580,42 +3580,27 @@ def draw_pink_dash_path(boss, cx, cy):
         return
     ux, uy = (ex - cx) / length, (ey - cy) / length
     nx, ny = -uy, ux
+    reach = length * min(1.0, charge * 1.35)  # The bolt races out of him and gets there a little before he goes
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     glow = pygame.Surface((WIDTH, HEIGHT))  # Added on top (brightens toward pink instead of greying the grass)
-    # Afterimages of him along the way, appearing one after another as the dash gets closer
-    echoes = 5
-    for k in range(1, echoes + 1):
-        if charge < k / (echoes + 1):
-            continue
-        d = length * k / (echoes + 1)
-        x, y = cx + ux * d, cy + uy * d
-        pygame.draw.circle(glow, (70, 10, 45), (x, y), BOSS_RADIUS)
-        pygame.draw.circle(layer, (255, 200, 235, 200), (x, y), BOSS_RADIUS, 3)
-        for j in range(4):  # Sparkles on each afterimage
-            a = now * 3 + k + j * math.pi / 2
-            sx, sy = x + math.cos(a) * BOSS_RADIUS * 0.7, y + math.sin(a) * BOSS_RADIUS * 0.7
-            pygame.draw.line(layer, (255, 245, 250, 230), (sx - 6, sy), (sx + 6, sy), 2)
-            pygame.draw.line(layer, (255, 245, 250, 230), (sx, sy - 6), (sx, sy + 6), 2)
-    # Crackling lightning bolt, re-drawn a few times a second so it flickers
-    rng = random.Random(int(now * 18))
-    segments = max(4, int(length // 55))
+    rng = random.Random(int(now * 18))  # Re-drawn a few times a second so it flickers
+    segments = max(2, int(reach // 55))
     points = [(cx, cy)]
     for k in range(1, segments):
-        d = length * k / segments
+        d = reach * k / segments
         jag = rng.uniform(-28, 28)
         points.append((cx + ux * d + nx * jag, cy + uy * d + ny * jag))
-    points.append((ex, ey))
+    points.append((cx + ux * reach, cy + uy * reach))
     pygame.draw.lines(glow, (160, 30, 110), False, points, 18)
-    pygame.draw.lines(layer, (255, 60, 170, int(150 + 100 * charge)), False, points, 9)
+    pygame.draw.lines(layer, (255, 60, 170, 230), False, points, 9)
     pygame.draw.lines(layer, (255, 235, 248, 255), False, points, 3)
-    # Spinning diamond at the landing spot, shrinking down to his size
-    size = BOSS_RADIUS * (2.2 - 1.2 * charge)
-    spin = now * 2.5
-    diamond = [(ex + math.cos(spin + k * math.pi / 2) * size, ey + math.sin(spin + k * math.pi / 2) * size) for k in range(4)]
-    pygame.draw.polygon(glow, (int(60 + 90 * charge), int(8 + 12 * charge), int(40 + 60 * charge)), diamond)
-    pygame.draw.polygon(layer, (255, 235, 248, 250), diamond, 5)
-    inner = [(ex + (x - ex) * 0.55, ey + (y - ey) * 0.55) for x, y in diamond]
-    pygame.draw.polygon(layer, (255, 150, 215, 220), inner, 3)
+    tip_x, tip_y = points[-1]
+    pygame.draw.circle(layer, (255, 245, 250, 255), (tip_x, tip_y), 7)  # Bright spark at the front of the bolt
+    # Circle where he lands, shrinking down to his size
+    ring = BOSS_RADIUS * (1.8 - 0.8 * charge)
+    pygame.draw.circle(layer, (255, 60, 165, int(90 + 70 * charge)), (ex, ey), BOSS_RADIUS)
+    pygame.draw.circle(layer, (255, 235, 248, 250), (ex, ey), ring, 5)
+    pygame.draw.circle(layer, (255, 150, 215, 220), (ex, ey), BOSS_RADIUS * 0.55, 3)
     screen.blit(glow, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
     screen.blit(layer, (0, 0))
 def boss_dash_length(boss):
