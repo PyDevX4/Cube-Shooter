@@ -170,7 +170,8 @@ def main():
             bump_version("patch")
 
     write_icon()
-    cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--windowed",
+    # Build into "release" rather than "dist": if you're playing dist\CubeShooter.exe, Windows won't let it be overwritten
+    cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--windowed", "--distpath", "release",
            "--name", os.path.splitext(ASSET)[0], "--icon", ICON,
            "--hidden-import", "cube_accounts", "--hidden-import", "updater", "--hidden-import", "version",
            "--hidden-import", "sounds", "--hidden-import", "cube_online", "--hidden-import", "cube_net",
@@ -181,7 +182,7 @@ def main():
     if subprocess.call(cmd) != 0:
         sys.exit("PyInstaller failed")
     shutil.rmtree(os.path.join(HERE, "build"), ignore_errors=True)
-    out = os.path.join(HERE, "dist", ASSET)
+    out = os.path.join(HERE, "release", ASSET)
     if not os.path.exists(out):
         sys.exit("build reported success but %s is missing" % out)
     print("\nbuilt %s  (%.1f MB)" % (out, os.path.getsize(out) / 1e6))
