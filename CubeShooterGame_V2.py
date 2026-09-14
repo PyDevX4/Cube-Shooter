@@ -2477,7 +2477,7 @@ def update_violet_enemies(dt):
     half = player_size / 2
     for enemy in violet_enemies:
         enemy["swirl"] = (enemy["swirl"] + dt * 3) % (2 * math.pi)
-    if in_block_defence or game_over:
+    if in_block_defence or game_over or spectating:
         return
     for enemy in violet_enemies:
         cx, cy = enemy["x"] + half, enemy["y"] + half
@@ -2971,7 +2971,7 @@ def handle_block_menu_event(event):
 
 def living_players():
     """Top-left positions of every player still alive in this game: you, plus the others in a multiplayer match."""
-    found = [] if game_over else [(player_x, player_y)]
+    found = [] if (game_over or spectating) else [(player_x, player_y)]
     if multiplayer_match:
         found += [(p["x"], p["y"]) for p in remote_players.values() if not p.get("dead")]
     return found or [(player_x, player_y)]
@@ -3016,7 +3016,7 @@ def ray_to_rect(x, y, angle, rect):
 
 def player_safe():
     """True when nothing can hurt the player: invincible, or in Block Defence (only the block takes damage)."""
-    return invincible or in_block_defence
+    return invincible or in_block_defence or spectating or respawn_grace > 0
 
 # ---- Waves ----
 WAVES = {
@@ -4836,7 +4836,132 @@ remote_bullets = []           # Other players' shots, flying on this screen
 NET_SEND_EVERY = 0.05         # 20 updates a second
 net_send_timer = 0.0
 
+# ---- Dead in a multiplayer match: watch the others until the next wave ----
+spectating = False            # Dead, but the match goes on
+spectate_target = None        # Name of the player being watched (None = free cam)
+free_cam = False
+respawn_grace = 0.0           # Seconds of safety right after coming back
+all_dead_since = None         # When everyone in the match was last seen dead (the host ends the match after a moment)
+net_last_wave = None
+FREE_CAM_SPEED = 14
+RESPAWN_GRACE = 2.0
+ALL_DEAD_WAIT = 3.0
+
+def start_spectating():
+    """You died in a multiplayer match: no game over screen - the world carries on and you watch."""
+    global game_over, spectating, spectate_target, free_cam
+    game_over = False
+    spectating = True
+    free_cam = False
+    spectate_target = None
+    next_spectate_target()
+    bullets[:] = [b for b in bullets if b.get("owner")]  # Your own shots in the air fizzle out
+
+def living_teammates():
+    return [name for name, p in remote_players.items() if not p.get("dead")]
+
+def next_spectate_target():
+    global spectate_target, free_cam
+    alive = living_teammates()
+    if not alive:
+        spectate_target, free_cam = None, True
+        return
+    free_cam = False
+    spectate_target = alive[(alive.index(spectate_target) + 1) % len(alive)] if spectate_target in alive else alive[0]
+
+def spectator_camera():
+    """Follow the watched teammate, or fly around with WASD in free cam."""
+    global camera_x, camera_y, spectate_target
+    if not free_cam and spectate_target not in living_teammates():
+        next_spectate_target()
+    if free_cam:
+        keys = pygame.key.get_pressed()
+        camera_x += (keys[pygame.K_d] - keys[pygame.K_a]) * FREE_CAM_SPEED
+        camera_y += (keys[pygame.K_s] - keys[pygame.K_w]) * FREE_CAM_SPEED
+        camera_x = max(-WIDTH // 2, min(MAP_WIDTH - WIDTH // 2, camera_x))
+        camera_y = max(-HEIGHT // 2, min(MAP_HEIGHT - HEIGHT // 2, camera_y))
+    else:
+        target = remote_players[spectate_target]
+        camera_x = target["x"] - WIDTH // 2 + player_size // 2
+        camera_y = target["y"] - HEIGHT // 2 + player_size // 2
+
+def handle_spectator_event(event):
+    global free_cam
+    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        next_spectate_target()
+    elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+        next_spectate_target()
+    elif event.type == pygame.KEYDOWN and event.key == pygame.K_f:
+        if free_cam and living_teammates():
+            next_spectate_target()
+        else:
+            free_cam = True
+
+def respawn_from_spectating():
+    """A new wave: back in, next to a teammate who's still alive (or the middle of the map)."""
+    global spectating, player_x, player_y, respawn_grace, free_cam, spectate_target
+    spectating = False
+    free_cam, spectate_target = False, None
+    alive = living_teammates()
+    if alive:
+        buddy = remote_players[random.choice(alive)]
+        angle = random.uniform(0, 2 * math.pi)
+        player_x = max(0, min(MAP_WIDTH - player_size, buddy["x"] + math.cos(angle) * 90))
+        player_y = max(0, min(MAP_HEIGHT - player_size, buddy["y"] + math.sin(angle) * 90))
+    else:
+        player_x, player_y = MAP_WIDTH // 2 - player_size // 2, MAP_HEIGHT // 2 - player_size // 2
+    respawn_grace = RESPAWN_GRACE
+    spawn_teleport_flash(player_x + player_size / 2, player_y + player_size / 2,
+                         player_x + player_size / 2, player_y + player_size / 2, (140, 220, 255))
+
+def everyone_dead():
+    return spectating and not living_teammates()
+
+def update_spectating(dt):
+    """Every frame in a match: turn a death into spectating, respawn on a new wave, end the match if everyone's down."""
+    global net_last_wave, respawn_grace, all_dead_since, console_message, console_message_timer
+    if game_over:
+        start_spectating()
+    respawn_grace = max(0.0, respawn_grace - dt)
+    waves_mode = not (in_storm_survival or in_block_defence)
+    if net_last_wave is None:
+        net_last_wave = wave
+    if wave != net_last_wave:
+        net_last_wave = wave
+        if spectating and waves_mode:
+            respawn_from_spectating()
+    if everyone_dead():
+        if all_dead_since is None:
+            all_dead_since = time.monotonic()
+        elif net_role() == "host" and time.monotonic() - all_dead_since >= ALL_DEAD_WAIT:
+            all_dead_since = None
+            net.end_match()  # Everyone's down: game over, back to the lobby
+    else:
+        all_dead_since = None
+
+def draw_spectator_hud():
+    if not spectating:
+        return
+    waves_mode = not (in_storm_survival or in_block_defence)
+    if everyone_dead():
+        title = "Everyone is down!"
+        hint = "Game over - back to the lobby in a moment"
+    else:
+        title = "You died - back in next wave" if waves_mode else "You died - spectating"
+        watching = "Free cam (WASD to move)" if free_cam else f"Watching {spectate_target}"
+        hint = f"{watching}     Click / Space: next player     F: free cam"
+    banner = get_bubble_text(title, 46, (255, 200, 190), (230, 70, 60), outline=6)
+    screen.blit(banner, banner.get_rect(midbottom=(WIDTH // 2, HEIGHT - 70)))
+    text = small_button_font.render(hint, True, WHITE)
+    box = text.get_rect(midbottom=(WIDTH // 2, HEIGHT - 26)).inflate(24, 10)
+    pygame.draw.rect(screen, (20, 24, 32), box, border_radius=8)
+    screen.blit(text, text.get_rect(center=box.center))
+
 def reset_remote_players():
+    global spectating, free_cam, spectate_target, all_dead_since, net_last_wave, respawn_grace
+    spectating = free_cam = False
+    spectate_target = all_dead_since = net_last_wave = None
+    respawn_grace = 0.0
     remote_players.clear()
     remote_bullets.clear()
 
@@ -4866,7 +4991,7 @@ def send_player_state(dt):
     shots = net_shot_outbox[:]
     net_shot_outbox.clear()
     net.relay({"k": "p", "x": round(player_x, 1), "y": round(player_y, 1), "a": round(last_rot_angle, 3),
-               "s": current_skin, "d": bool(game_over), "b": shots})
+               "s": current_skin, "d": bool(game_over or spectating), "b": shots})
 
 def receive_player_state(name, data):
     now = time.monotonic()
@@ -5093,6 +5218,8 @@ def update_multiplayer():
             start_selected_mode()
             multiplayer_match = True
         elif kind in ("end", "disconnected"):
+            if multiplayer_match and everyone_dead():
+                globals().update(console_message=f"Game over - everyone went down (wave {wave})", console_message_timer=4.0)
             if multiplayer_match and not (start_screen or hub_open):
                 multiplayer_match = False
                 exit_to_main_menu()  # The match is over (or the host left): back to the lobby
@@ -5102,6 +5229,7 @@ def update_multiplayer():
     if in_multiplayer_game():
         frame_dt = globals().get("dt", 1 / 60)
         globals().update(game_paused=False, pause_countdown=0.0)  # The world keeps going for everyone
+        update_spectating(frame_dt)
         send_player_state(frame_dt)
         if net_role() == "host":
             send_world(frame_dt)
@@ -5850,12 +5978,13 @@ if _remembered_account is not None:
     log_in_as(_remembered_account, f"Welcome back, {_remembered_account['name']}!")
 
 was_game_over = False
+was_spectating = False
 while running:
     dt = clock.tick(60) / 1000
     update_multiplayer()
-    if game_over and not was_game_over:
+    if (game_over and not was_game_over) or (spectating and not was_spectating):
         sounds.play("player_death")  # However the player died, the death sound plays once
-    was_game_over = game_over
+    was_game_over, was_spectating = game_over, spectating
 
     # A downloaded update gets installed as soon as you're on a menu (never in the middle of a game)
     if auto_updater.state == "ready" and (login_screen_open or start_screen or hub_open or settings_open):
@@ -6029,7 +6158,7 @@ while running:
 
 
 
-        elif not game_over:
+        elif not game_over and not spectating:
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = pygame.mouse.get_pos()
                 
@@ -6065,6 +6194,10 @@ while running:
                             shots_fired += 1
                             sounds.play("shoot", 0.6)
         
+
+        if spectating and not in_menu:
+            handle_spectator_event(event)
+            continue
 
         # Bottom-left mode buttons, plus the Shooting Range play/editor toggle
         if not game_over and not start_screen:
@@ -6219,15 +6352,17 @@ while running:
             if keys[pygame.K_a]: camera_x -= camera_speed
             if keys[pygame.K_d]: camera_x += camera_speed
         else:
-            # Play mode: Player movement
-            if not game_paused:
+            # Play mode: Player movement (a spectator steers the camera instead)
+            if not game_paused and not spectating:
                 if keys[pygame.K_w]: player_y -= player_speed
                 if keys[pygame.K_s]: player_y += player_speed
                 if keys[pygame.K_a]: player_x -= player_speed
                 if keys[pygame.K_d]: player_x += player_speed
 
         # Update camera to follow player for unlimited map (only in play mode)
-        if not (in_shooting_range and shooting_range_editor_mode):
+        if spectating:
+            spectator_camera()
+        elif not (in_shooting_range and shooting_range_editor_mode):
             camera_x = player_x - WIDTH // 2 + player_size // 2
             camera_y = player_y - HEIGHT // 2 + player_size // 2
 
@@ -6571,7 +6706,7 @@ while running:
                 bullets.pop(i)
 
             # Coin pickup logic
-            if not in_shooting_range:  # Coins drop and can be collected in every mode except the Sandbox
+            if not in_shooting_range and not spectating:  # Coins drop and can be collected in every mode except the Sandbox
                 for coin in coins[:]:
                     update_coin_bounce(coin)
                     dist = math.hypot(player_x + player_size//2 - coin["x"], player_y + player_size//2 - coin["y"])
@@ -6815,7 +6950,7 @@ while running:
             player_face = SKIN_TEXTURES[current_skin]
         else:
             player_face = player_color
-        if not game_over:  # On the frame the player dies they shatter instead (see the death snapshot further down)
+        if not game_over and not spectating:  # On the frame the player dies they shatter instead (see the death snapshot further down)
             draw_player_cube(player_x - camera_x, player_y - camera_y, player_face, SKIN_GLOWS.get(current_skin, player_color), last_rot_angle)
         if multiplayer_match:
             draw_remote_players()
@@ -7068,7 +7203,7 @@ while running:
 
         # Draw the orbiting mini gun: a barrel pointing where you aim, under a round gun body
         # (skipped on the frame the player dies, so it isn't frozen into the death snapshot)
-        if not game_over:
+        if not game_over and not spectating:
             mini_center = (orbit_x - camera_x + mini_size // 2, orbit_y - camera_y + mini_size // 2)
             barrel_end = (mini_center[0] + math.cos(last_rot_angle) * 16, mini_center[1] + math.sin(last_rot_angle) * 16)
             pygame.draw.line(screen, (30, 32, 40), mini_center, barrel_end, 8)
@@ -7130,6 +7265,7 @@ while running:
                 stats.append(enemy_stat)
         draw_stats_bar(stats)
         draw_boss_health()
+        draw_spectator_hud()
 
         # Draw wave top left (hide wave in shooting range, storm survival, and block defence)
         if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial:
