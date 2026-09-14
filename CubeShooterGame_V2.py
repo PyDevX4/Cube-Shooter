@@ -3277,6 +3277,17 @@ WAVES = {
     136: {"violet": 10, "yellow": 8, "pink": 8, "blue": 10}, 137: {"violet": 10, "purple": 8, "teal": 10},
     138: {"violet": 12, "red": 30, "green": 20, "blue": 15, "pink": 6}, 139: {"violet": 14, "teal": 12, "orange": 8, "yellow": 8},
     140: {"boss": "teal"},
+    # 141-159: every enemy type in mixed waves (never more than 100), building up to wave 160
+    141: {"red": 30, "green": 20, "pink": 8}, 142: {"blue": 15, "teal": 10, "violet": 6},
+    143: {"orange": 10, "yellow": 10, "red": 25}, 144: {"purple": 8, "pink": 10, "green": 25},
+    145: {"violet": 10, "teal": 12, "blue": 15, "red": 20}, 146: {"yellow": 12, "orange": 8, "pink": 12, "green": 20},
+    147: {"red": 40, "purple": 10, "violet": 8}, 148: {"teal": 20, "blue": 20, "orange": 10},
+    149: {"pink": 15, "yellow": 10, "violet": 10, "red": 25}, 150: {"green": 40, "blue": 20, "purple": 8, "teal": 10},
+    151: {"orange": 14, "violet": 12, "pink": 14, "red": 20}, 152: {"yellow": 15, "teal": 18, "green": 30},
+    153: {"purple": 12, "blue": 25, "pink": 16, "orange": 8}, 154: {"violet": 15, "red": 40, "yellow": 10, "teal": 10},
+    155: {"pink": 20, "orange": 15, "green": 30, "blue": 15}, 156: {"teal": 25, "purple": 10, "violet": 12, "yellow": 12},
+    157: {"red": 30, "green": 20, "blue": 15, "pink": 15, "orange": 10, "yellow": 10}, 158: {"violet": 18, "teal": 20, "purple": 12, "pink": 18, "orange": 12},
+    159: {"pink": 25, "violet": 15, "teal": 20, "yellow": 15, "orange": 15, "blue": 10},
 }
 
 def wave_spawn_counts(number):
