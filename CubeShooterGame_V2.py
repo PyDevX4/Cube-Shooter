@@ -1953,9 +1953,10 @@ def set_boss_health(kind, health):
     boss["enraged"] = health <= BOSS_HEALTH // 2
     boss["waves_done"] = [at for at in (75, 50, 25) if at > health]  # Red/Green: skipped-past spawns don't happen
     if kind == "teal":
-        boss["events_done"] = [at for at in (175, 150, 125, 100) if at > health]
+        boss["events_done"] = [at for at in (175, 150, 125, 100, 75, 50) if at > health]
         boss["shielded"] = False
         boss["ghost_swarm"] = False
+        boss["clone"] = None
         if boss["phase"] in ("swarm", "guard", "throw", "vanish", "reappear", "rings", "nuke"):
             boss["phase"], boss["timer"] = "hidden", TEAL_BOSS_VANISH_WAIT
         if health < 150:
@@ -1964,6 +1965,8 @@ def set_boss_health(kind, health):
             boss["phase"], boss["timer"] = "throw", 0.6
         if health < 100:
             boss["phase"], boss["timer"], boss["rings_done"] = "rings", 0.5, 0  # Below 100: the ring attacks
+        if health < 50:
+            teal_boss_start_clone(boss)  # Below 50: the fake clone
         if health == 175:
             teal_boss_start_guard(boss)
         elif health == 150:
@@ -1972,6 +1975,10 @@ def set_boss_health(kind, health):
             teal_boss_start_guard(boss, 125)
         elif health == 100:
             teal_boss_start_vanish(boss)
+        elif health == 75:
+            teal_boss_start_guard(boss, 75)
+        elif health == 50:
+            teal_boss_start_swarm(boss, 50)
     if kind == "yellow":
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         boss["event"], boss["shielded"], boss["arms"] = None, False, None
@@ -3335,7 +3342,8 @@ TEAL_BOSS_START_WAIT = 3.0       # Visible in the middle for this long at the st
 TEAL_BOSS_VANISH_WAIT = 1.0      # Invisible for this long before each teleport
 TEAL_BOSS_FUSE = 1.0             # Flashes this long after appearing on the player, then explodes
 TEAL_BOSS_BLAST_RADIUS = 230     # Room to run: you walk about 300 pixels in that second
-TEAL_BOSS_SPAWN_AT_175 = {"blue": 20, "teal": 15}
+TEAL_BOSS_SPAWN_AT_175 = {"blue": 20, "teal": 15, "orange": 10}
+TEAL_BOSS_SPAWN_AT_75 = {"blue": 40, "green": 20}
 TEAL_BOSS_TEALS = 50             # Normal teals he calls in after his 3 second start, and again after the 175 shield
 TEAL_SWARM_ROUNDS = 25           # At 150: this many rounds...
 TEAL_SWARM_SIZE = 100            # ...of this many teals all over the map...
@@ -3359,6 +3367,9 @@ TEAL_RING_SPACING = 238           # ...one every this many pixels around each ri
 TEAL_RING_FUSE = 1.0              # ...exploding after 1 second
 TEAL_RING_GAP = 0.6               # Pause between ring attacks (after the last one has exploded)
 TEAL_NUKE_WARNING = 3.5           # The big blast: 3.5 seconds of warning...
+TEAL_SWARM50_SPEED = 1.5            # At 50: the swarm again, 1.5x smaller and exploding 1.5x faster
+TEAL_CLONE_SPAWN = {"teal": 25, "green": 20, "red": 20}  # When the fake clone appears (after the 50 swarm)
+TEAL_CLONE_SCATTER = 260            # With the clone, each of them lands somewhere within this far of the player
 TEAL_NUKE_RADIUS = int(math.sqrt(0.5 * MAP_WIDTH * MAP_HEIGHT / math.pi))  # ...and it covers half of the map
 ORANGE_BOSS_GUN_LENGTH = BOSS_RADIUS + 60
 ORANGE_BOSS_BEAM_WIDTH = 16
@@ -3617,6 +3628,12 @@ def boss_take_bullet(bullet):
         return False
     if active_boss["kind"] == "purple":
         return purple_boss_take_bullet(active_boss, bullet)
+    if active_boss["kind"] == "teal":
+        clone = active_boss.get("clone")
+        if clone is not None and clone["phase"] == "fuse" and math.hypot(bullet["x"] + bullet_size / 2 - clone["x"],
+                                                                         bullet["y"] + bullet_size / 2 - clone["y"]) < BOSS_RADIUS:
+            clone["flash"] = 0.08  # Looks hit, but it's the fake: no damage
+            return True
     if active_boss["kind"] == "teal" and not teal_boss_visible(active_boss):
         return False  # Invisible: shots go straight through where he was
     if active_boss["kind"] == "yellow":
@@ -3783,6 +3800,14 @@ def update_teal_boss(boss, dt):
     flashes faster and faster -> explodes (he survives) -> invisible again. At 175 he waits shielded in the middle until
     every enemy is dead, then 50 more teals and back to the loop."""
     boss["timer"] -= dt
+    clone = boss.get("clone")
+    if clone is not None and boss["phase"] in ("hidden", "fuse"):
+        # With the clone, both of them land somewhere near the player instead of right on top
+        clone["timer"] -= dt
+        clone["flash"] = max(0.0, clone["flash"] - dt)
+        teal_teleporter_step(clone, dt, TEAL_CLONE_SCATTER)
+        teal_teleporter_step(boss, dt, TEAL_CLONE_SCATTER)
+        return
     if boss["phase"] == "swarm":
         update_teal_swarm(boss, dt)
         return
@@ -3806,6 +3831,8 @@ def update_teal_boss(boss, dt):
             if boss.get("guard_at", 175) == 175:
                 spawn_minions_any({"teal": TEAL_BOSS_TEALS})
                 boss["phase"], boss["timer"] = "hidden", TEAL_BOSS_VANISH_WAIT
+            elif boss["guard_at"] == 75:
+                boss["phase"], boss["timer"], boss["rings_done"] = "rings", 0.5, 0  # Back to the rings and big blast
             else:
                 teal_boss_begin_throwing(boss)
         return
@@ -3857,7 +3884,7 @@ def teal_boss_start_guard(boss, at=175):
     effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.4, "color": (80, 255, 235), "size": 3.0})
     boss["phase"], boss["timer"], boss["guard_at"] = "guard", 0.0, at
     boss["shielded"], boss["ripple"] = True, 0.4
-    spawn_minions_any(TEAL_BOSS_SPAWN_AT_175 if at == 175 else TEAL_BOSS_SPAWN_AT_125)
+    spawn_minions_any({175: TEAL_BOSS_SPAWN_AT_175, 125: TEAL_BOSS_SPAWN_AT_125, 75: TEAL_BOSS_SPAWN_AT_75}[at])
 
 def teal_boss_begin_throwing(boss):
     """Start (or go back to) throwing teals from the middle; 25 blues come in once each time."""
@@ -3923,6 +3950,34 @@ def update_teal_rings(boss, dt):
     teal_ring_attack(boss)
     boss["timer"] = TEAL_RING_GAP
 
+def teal_boss_start_clone(boss):
+    """After the 50 swarm: a fake clone appears. Both hide, land near the player and explode like stage 1.
+    Only the real one takes damage. 25 teals, 20 greens and 20 reds come in too."""
+    boss["swarm_at"] = None
+    boss["shielded"], boss["ripple"] = False, 0.4
+    boss["phase"], boss["timer"] = "hidden", TEAL_BOSS_VANISH_WAIT
+    boss["clone"] = {"x": boss["x"], "y": boss["y"], "phase": "hidden", "timer": TEAL_BOSS_VANISH_WAIT + 0.5,
+                     "blink_phase": 0.0, "fuse_len": TEAL_BOSS_FUSE, "flash": 0.0, "shielded": False, "ripple": 0.0}
+    spawn_minions_any(TEAL_CLONE_SPAWN)
+
+def teal_teleporter_step(t, dt, scatter):
+    """One step of the hide -> land -> flash -> explode loop, for the boss or his clone."""
+    if t["phase"] == "hidden":
+        if t["timer"] <= 0:
+            victim_x, victim_y = random.choice(living_players())
+            a, r = random.uniform(0, 2 * math.pi), random.uniform(0, scatter)
+            t["x"] = max(BOSS_RADIUS, min(MAP_WIDTH - BOSS_RADIUS, victim_x + player_size / 2 + math.cos(a) * r))
+            t["y"] = max(BOSS_RADIUS, min(MAP_HEIGHT - BOSS_RADIUS, victim_y + player_size / 2 + math.sin(a) * r))
+            t["fuse_len"] = TEAL_BOSS_FUSE
+            t["phase"], t["timer"], t["blink_phase"] = "fuse", t["fuse_len"], 0.0
+            effects.append({"type": "flash", "x": t["x"], "y": t["y"], "age": 0.0, "life": 0.3, "color": (80, 255, 235), "size": 2.0})
+    elif t["phase"] == "fuse":
+        progress = 1 - max(0.0, t["timer"]) / t["fuse_len"]
+        t["blink_phase"] += (4 + 18 * progress) * dt
+        if t["timer"] <= 0:
+            teal_boss_explode(t)
+            t["phase"], t["timer"] = "hidden", TEAL_BOSS_VANISH_WAIT
+
 def teal_boss_fuse(boss):
     return TEAL_BOSS_FUSE
 
@@ -3938,11 +3993,13 @@ def teal_boss_throw(boss):
         teal.update({"fuse": 0.0, "fuse_len": TEAL_FUSE, "thrown_to": (px + math.cos(a) * r - half, py + math.sin(a) * r - half)})
         teal_enemies.append(teal)
 
-def teal_boss_start_swarm(boss):
-    """At 150: every other enemy dies (no coins), he jumps to the middle behind a shield, and the swarm rounds begin."""
+def teal_boss_start_swarm(boss, at=150):
+    """At 150 (and 50): every other enemy dies (no coins), he jumps to the middle behind a shield, and the swarm rounds begin.
+    At 50 the rounds are 1.5x smaller and explode 1.5x faster."""
     kill_all_enemies_no_coins()
-    boss["events_done"].append(150)
-    boss["health"] = 150
+    boss["events_done"].append(at)
+    boss["health"] = at
+    boss["swarm_at"] = at
     boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
     effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.4, "color": (80, 255, 235), "size": 3.0})
     boss["phase"], boss["timer"] = "swarm", 1.0  # A second to see where he went before the first round
@@ -3956,7 +4013,11 @@ def update_teal_swarm(boss, dt):
     if boss["timer"] > 0:
         return
     ghost = boss.get("ghost_swarm", False)
+    fast = boss.get("swarm_at") == 50 and not ghost
     if boss["swarm_round"] >= (TEAL_GHOST_ROUNDS if ghost else TEAL_SWARM_ROUNDS):
+        if fast:
+            teal_boss_start_clone(boss)  # After the 50 swarm: the fake clone
+            return
         if ghost:
             # The ghost swarm is over: he reappears in the middle and waits before the ring attacks
             boss["ghost_swarm"] = False
@@ -3970,11 +4031,11 @@ def update_teal_swarm(boss, dt):
         return
     boss["swarm_round"] += 1
     barrier = 12
-    for _ in range(TEAL_SWARM_SIZE):  # Scattered all over the map, already flashing
+    for _ in range(round(TEAL_SWARM_SIZE / TEAL_SWARM50_SPEED) if fast else TEAL_SWARM_SIZE):  # Scattered all over the map, already flashing
         x = random.uniform(barrier, MAP_WIDTH - player_size - barrier)
         y = random.uniform(barrier, MAP_HEIGHT - player_size - barrier)
         teal = new_teal_enemy(x, y)
-        teal.update({"fuse": 0.0, "fuse_len": TEAL_SWARM_FUSE, "swarm": True, "ghost": ghost})  # Same 1 s fuse as the 150 swarm
+        teal.update({"fuse": 0.0, "fuse_len": TEAL_SWARM_FUSE / (TEAL_SWARM50_SPEED if fast else 1), "swarm": True, "ghost": ghost})
         teal_enemies.append(teal)
     boss["timer"] = TEAL_SWARM_GAP / (TEAL_GHOST_SPEED if ghost else 1)
 
@@ -4235,6 +4296,10 @@ def hurt_boss(amount=1, force=False):
             teal_boss_start_guard(boss, 125)
         elif boss["health"] <= 100 and 100 not in boss["events_done"] and boss["health"] > 0:
             teal_boss_start_vanish(boss)
+        elif boss["health"] <= 75 and 75 not in boss["events_done"] and boss["health"] > 0:
+            teal_boss_start_guard(boss, 75)
+        elif boss["health"] <= 50 and 50 not in boss["events_done"] and boss["health"] > 0:
+            teal_boss_start_swarm(boss, 50)
         amount = 0
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
@@ -4345,6 +4410,8 @@ def draw_boss():
     if boss is None:
         return
     if boss["kind"] == "teal":
+        if boss.get("clone") is not None:
+            draw_teal_boss(boss["clone"])
         draw_teal_boss(boss)
         return
     info = BOSSES[boss["kind"]]
