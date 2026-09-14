@@ -3350,7 +3350,7 @@ TEAL_BOSS_THROW_BLUES = 25        # Each time he starts throwing (after 150 and 
 TEAL_BOSS_THROW_COUNT_125 = 5     # Below 125 he throws 5 at a time
 TEAL_BOSS_VANISH_100 = 3.0        # At 100 he vanishes; the ghost swarm starts this long after
 TEAL_GHOST_ROUNDS = 30            # The ghost swarm: 30 rounds...
-TEAL_GHOST_SPEED = 1.5            # ...1.5 times faster than the 150 swarm...
+TEAL_GHOST_SPEED = 1.5            # ...with breaks between rounds 1.5 times shorter than the 150 swarm...
 TEAL_GHOST_ALPHA = 13             # ...and the teals are 95% invisible
 TEAL_BOSS_REAPPEAR_WAIT = 3.0     # Then he's back in the middle, waiting this long
 TEAL_RINGS_PER_BLAST = 10         # Ring attacks before each big blast
@@ -3974,7 +3974,7 @@ def update_teal_swarm(boss, dt):
         x = random.uniform(barrier, MAP_WIDTH - player_size - barrier)
         y = random.uniform(barrier, MAP_HEIGHT - player_size - barrier)
         teal = new_teal_enemy(x, y)
-        teal.update({"fuse": 0.0, "fuse_len": TEAL_SWARM_FUSE / (TEAL_GHOST_SPEED if ghost else 1), "swarm": True, "ghost": ghost})
+        teal.update({"fuse": 0.0, "fuse_len": TEAL_SWARM_FUSE, "swarm": True, "ghost": ghost})  # Same 1 s fuse as the 150 swarm
         teal_enemies.append(teal)
     boss["timer"] = TEAL_SWARM_GAP / (TEAL_GHOST_SPEED if ghost else 1)
 
