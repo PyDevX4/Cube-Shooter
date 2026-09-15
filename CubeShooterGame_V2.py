@@ -6999,9 +6999,9 @@ SHOP_UPGRADES = [
 
 def upgrade_sections():
     """The Upgrades tab laid out top to bottom: (heading, [(item, card, button)]) for Gun, Gun Add-ons and Coins."""
-    groups = [("GUN", [u for u in SHOP_UPGRADES if u["tag"] == "GUN"]),
+    groups = [("GUN", [{"track": "GUN"}]),
               ("GUN ADD-ONS  (one at a time)", GUN_ADDONS),
-              ("COINS", [u for u in SHOP_UPGRADES if u["tag"] == "MAGNET"])]
+              ("COINS", [{"track": "MAGNET"}])]
     grid_w = SKIN_COLUMNS * SKIN_CARD_W + (SKIN_COLUMNS - 1) * SKIN_CARD_GAP
     left = (WIDTH - grid_w) // 2
     y = SHOP_UPGRADE_VIEWPORT.y + 10 - round(shop_upgrade_scroll)
@@ -7010,6 +7010,12 @@ def upgrade_sections():
         heading_y = y
         y += 44
         placed = []
+        if "track" in items[0]:  # One long card: Upgrade Gun / level / Upgrade button
+            card = pygame.Rect(left, y, grid_w, 190)
+            placed.append((items[0], card, pygame.Rect(card.centerx - 130, card.bottom - 66, 260, 50)))
+            y += card.height + SKIN_CARD_GAP + 10
+            sections.append((heading, heading_y, placed))
+            continue
         for i, item in enumerate(items):
             card = pygame.Rect(left + (i % SKIN_COLUMNS) * (SKIN_CARD_W + SKIN_CARD_GAP),
                                y + (i // SKIN_COLUMNS) * (SKIN_CARD_H + SKIN_CARD_GAP), SKIN_CARD_W, SKIN_CARD_H)
@@ -7035,6 +7041,26 @@ def draw_upgrades_tab():
                          (WIDTH - placed[0][1].x, heading_y + 22), 2)
         for item, card, button in placed:
             if card.bottom < SHOP_UPGRADE_VIEWPORT.top or card.top > SHOP_UPGRADE_VIEWPORT.bottom:
+                continue
+            if "track" in item:
+                levels = [u for u in SHOP_UPGRADES if u["tag"] == item["track"]]
+                level = gun_level() if item["track"] == "GUN" else magnet_level()
+                nxt = levels[level] if level < len(levels) else None
+                draw_panel(card, highlight=nxt is None)
+                title = get_bubble_text("Upgrade Gun" if item["track"] == "GUN" else "Upgrade Magnet", 44, (255, 240, 150), (255, 160, 40))
+                screen.blit(title, title.get_rect(center=(card.centerx, card.y + 34)))
+                numeral = ["None", "I", "II", "III", "IV", "V"][level]
+                level_text = get_bubble_text(numeral, 50, (255, 255, 255), (120, 200, 255) if item["track"] == "GUN" else (255, 200, 60))
+                screen.blit(level_text, level_text.get_rect(center=(card.centerx, card.y + 88)))
+                if nxt is None:
+                    button_color, label = GREEN, "Maxed"
+                elif main_game_coins >= nxt["price"]:
+                    button_color, label = BLUE, f"Upgrade - {nxt['price']}"
+                else:
+                    button_color, label = DARK_RED, f"Need {nxt['price']}"
+                draw_button(button, button_color)
+                label_text = small_button_font.render(label, True, BLACK)
+                screen.blit(label_text, label_text.get_rect(center=button.center))
                 continue
             owned = g[item["flag"]]
             if "key" in item:  # A gun add-on
@@ -7103,7 +7129,13 @@ def handle_upgrades_tab_click(pos):
     for _, _, placed in upgrade_sections()[0]:
         for item, card, button in placed:
             if button.collidepoint(pos):
-                click_gun_addon(item) if "key" in item else buy_shop_upgrade(item)
+                if "track" in item:
+                    levels = [u for u in SHOP_UPGRADES if u["tag"] == item["track"]]
+                    level = gun_level() if item["track"] == "GUN" else magnet_level()
+                    if level < len(levels):
+                        buy_shop_upgrade(levels[level])
+                else:
+                    click_gun_addon(item)
                 return
 
 # ---- Abilities tab: buy them here, and equip the ones you own ----
