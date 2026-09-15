@@ -2102,7 +2102,7 @@ def set_boss_health(kind, health):
         elif health == 25:
             teal_boss_start_guard(boss, 25)
     if kind == "pink":
-        boss["events_done"] = [at for at in (175, 150, 125, 100) if at > health]
+        boss["events_done"] = [at for at in (175, 150, 125, 100, 75, 50) if at > health]
         boss["lines"], boss["shielded"] = None, False
         if boss["phase"] not in ("start", "aim", "dash", "rest"):
             boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
@@ -2115,6 +2115,12 @@ def set_boss_health(kind, health):
             pink_boss_start_exit(boss, 125)
         elif health == 100:
             pink_boss_start_lines(boss, 100)
+        elif health == 75:
+            pink_boss_start_guard(boss)
+        elif health == 50:
+            pink_boss_start_lines(boss, 50)
+        elif 50 < health < 100:
+            boss["phase"], boss["zigzag"] = "zigzag", {"state": "pause", "timer": PINK_ZIGZAG_PAUSE, "dir": (1, 1)}
     if kind == "yellow":
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         boss["event"], boss["shielded"], boss["arms"] = None, False, None
@@ -3491,11 +3497,14 @@ PINK_LINES_GAP = 0.5 / 1.5      # ...with this long after they've crossed before
 PINK_LINES_SPACING = 156        # Line to line: the safe gap between two runners' paths is 68 px (1.5x smaller than before)
 PINK_RUNNER_SPEED = 3900        # How fast each pink runs its line (1.5x quicker)
 PINK_RUNNER_HIT = 44            # Touch distance for a runner
-PINK_MEMORY_SETS = 3            # At 100: each round flashes this many line sets, one at a time...
+PINK_MEMORY_SETS = 2            # At 100: each round flashes this many line sets, one at a time...
 PINK_MEMORY_SHOW = 0.35         # ...each for this long, then the pinks run them in the same order
-PINK_STORM_DASHES = 25          # 100-75: this many random dashes around the map...
-PINK_STORM_SHOW = 1.0           # ...shown for this long before he goes...
-PINK_STORM_TIME = 5.0           # ...then all of them done in this long
+PINK_ZIGZAG_LENGTH = 260        # 100-50: he moves like a pink enemy - diagonal dashes this long...
+PINK_ZIGZAG_SPEED = 700         # ...at this speed (slower than a pink's 1100)...
+PINK_ZIGZAG_PAUSE = 0.3         # ...with this stop between them, and no warning
+PINK_BOSS_ZIGZAG_SPAWNS = {100: {"yellow": 50}, 75: {"yellow": 50, "orange": 25}}
+PINK_BOSS_GUARD_75 = {"pink": 50}
+PINK_LINES_WARNING_50 = 0.45    # At 50: the 150 lines again, with a shorter warning
 # Orange Boss: four laser guns on a turret, in four stages, with a shielded laser-lines event at 75, 50 and 25.
 YELLOW_BOSS_ORB_DISTANCE = BOSS_RADIUS + 70
 YELLOW_BOSS_ORB_RADIUS = 30
@@ -3666,19 +3675,6 @@ def pink_boss_pick_target(boss):
     they're heading - which he does back to back with no delay."""
     tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
     px, py = tx + player_size / 2, ty + player_size / 2
-    if boss["health"] <= 100 and 100 in boss["events_done"]:
-        # 100-75: 25 random dashes all over the map, shown for 0.5 s and all done in 1 s
-        margin = BOSS_RADIUS + 12
-        plan = [(random.uniform(margin, MAP_WIDTH - margin), random.uniform(margin, MAP_HEIGHT - margin)) for _ in range(PINK_STORM_DASHES)]
-        total, fx, fy = 0.0, boss["x"], boss["y"]
-        for x, y in plan:
-            total += math.hypot(x - fx, y - fy)
-            fx, fy = x, y
-        boss["plan"], boss["target"] = plan, plan[0]
-        boss["dash_speed"] = total / PINK_STORM_TIME
-        boss["aim_len"] = PINK_STORM_SHOW
-        boss["angle"] = math.atan2(plan[0][1] - boss["y"], plan[0][0] - boss["x"])
-        return
     boss["dash_speed"] = None
     aims = [(px, py)]
     if boss["health"] <= 150:
@@ -3789,6 +3785,11 @@ def update_pink_boss(boss, dt):
             boss["phase"], boss["timer"] = "aim", boss["aim_len"]
     elif phase == "lines":
         update_pink_lines(boss, dt)
+    elif phase == "zigzag":
+        update_pink_zigzag(boss, dt)
+    elif phase == "guard":
+        if not any_enemies_alive():  # His 75 wave is dead: shield down, zigzag again with yellows and oranges
+            pink_boss_start_zigzag(boss, 75)
 
 def pink_boss_start_exit(boss, at=175):
     """At 175 and 125: he dashes off the map, straight away from the player, and vanishes."""
@@ -3816,6 +3817,9 @@ def pink_boss_start_lines(boss, at=150):
                      "dir": random.choice((1, -1)), "offset": random.uniform(0, PINK_LINES_SPACING)}
     if at == 100:
         pink_memory_new_round(boss["lines"])
+    elif at == 50:
+        boss["lines"]["warning"] = PINK_LINES_WARNING_50
+        boss["lines"]["timer"] = PINK_LINES_WARNING_50
 
 def pink_memory_new_round(lines):
     """Pick this round's 3 line sets (each its own diagonal and spacing) and start flashing the first."""
@@ -3884,8 +3888,7 @@ def update_pink_lines(boss, dt):
             lines["round"] += 1
             if lines["round"] >= PINK_LINES_ROUNDS:
                 boss["lines"] = None
-                boss["shielded"], boss["ripple"] = False, 0.4
-                boss["phase"], boss["timer"] = "rest", 0.5  # 100-75: the dash storms
+                pink_boss_start_zigzag(boss, 100)  # 100-75: zigzags like a pink enemy, and 50 yellows come in
                 return
             pink_memory_new_round(lines)
         return
@@ -3906,7 +3909,7 @@ def update_pink_lines(boss, dt):
             return
         lines["dir"] = -lines["dir"]  # The other diagonal
         lines["offset"] = random.uniform(0, PINK_LINES_SPACING)
-        lines["phase"], lines["timer"] = "warning", PINK_LINES_WARNING
+        lines["phase"], lines["timer"] = "warning", lines.get("warning", PINK_LINES_WARNING)
 
 def draw_pink_lines(boss):
     lines = boss.get("lines")
@@ -3914,7 +3917,7 @@ def draw_pink_lines(boss):
         return
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     if lines["phase"] in ("warning", "memorize"):
-        charge = 1.0 if lines["phase"] == "memorize" else 1 - max(0.0, lines["timer"]) / PINK_LINES_WARNING
+        charge = 1.0 if lines["phase"] == "memorize" else 1 - max(0.0, lines["timer"]) / lines.get("warning", PINK_LINES_WARNING)
         pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 70)
         for (sx, sy), (ex, ey) in pink_line_segments(lines):
             a, b = (sx - camera_x, sy - camera_y), (ex - camera_x, ey - camera_y)
@@ -3931,6 +3934,47 @@ def draw_pink_lines(boss):
         rx, ry = runner["x"] - camera_x, runner["y"] - camera_y
         if on_screen(rx, ry, 60):
             draw_orb(pink_orb, enemy_shadow, rx, ry)
+
+def pink_boss_start_zigzag(boss, at):
+    """100-75 (and after the 75 wave): move like a pink enemy - slower, with no warnings - and call in enemies once."""
+    boss["lines"], boss["plan"], boss["dash_speed"] = None, None, None
+    boss["shielded"], boss["ripple"] = False, 0.4
+    boss["phase"] = "zigzag"
+    boss["zigzag"] = {"state": "pause", "timer": PINK_ZIGZAG_PAUSE, "dir": (1, 1)}
+    spawn_minions_any(PINK_BOSS_ZIGZAG_SPAWNS[at])
+
+def update_pink_zigzag(boss, dt):
+    zz = boss["zigzag"]
+    if zz["state"] == "pause":
+        zz["timer"] -= dt
+        if zz["timer"] <= 0:
+            tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+            probe = {"x": boss["x"] - player_size / 2, "y": boss["y"] - player_size / 2, "dir": zz["dir"]}
+            zz["dir"] = pink_pick_diagonal(probe, tx, ty)
+            sx, sy = zz["dir"]
+            step = PINK_ZIGZAG_LENGTH / math.sqrt(2)
+            margin = BOSS_RADIUS + 12
+            zz["to"] = (max(margin, min(MAP_WIDTH - margin, boss["x"] + sx * step)),
+                        max(margin, min(MAP_HEIGHT - margin, boss["y"] + sy * step)))
+            boss["angle"] = math.atan2(sy, sx)
+            zz["state"] = "move"
+    else:
+        boss["dash_speed"] = PINK_ZIGZAG_SPEED
+        arrived = pink_dash_step(boss, dt, zz["to"])
+        boss["dash_speed"] = None
+        if arrived:
+            zz["state"], zz["timer"] = "pause", PINK_ZIGZAG_PAUSE
+
+def pink_boss_start_guard(boss):
+    """At 75: he goes to the middle, shields up and calls in 50 pinks. Once they're all dead he zigzags again."""
+    boss["events_done"].append(75)
+    boss["health"] = 75
+    boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
+    effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.5, "color": BOSSES["pink"]["color"], "size": 3.5})
+    boss["lines"], boss["plan"], boss["dash_speed"] = None, None, None
+    boss["shielded"], boss["ripple"] = True, 0.4
+    boss["phase"] = "guard"
+    spawn_minions_any(PINK_BOSS_GUARD_75)
 
 def pink_boss_visible(boss):
     return boss["phase"] not in ("gone", "return")
@@ -4805,6 +4849,10 @@ def hurt_boss(amount=1, force=False):
             pink_boss_start_exit(boss, 125)
         elif boss["health"] <= 100 and 100 not in boss["events_done"] and boss["health"] > 0:
             pink_boss_start_lines(boss, 100)
+        elif boss["health"] <= 75 and 75 not in boss["events_done"] and boss["health"] > 0:
+            pink_boss_start_guard(boss)
+        elif boss["health"] <= 50 and 50 not in boss["events_done"] and boss["health"] > 0:
+            pink_boss_start_lines(boss, 50)
         amount = 0
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
@@ -5260,6 +5308,10 @@ def draw_boss_health():
         lines = active_boss["lines"]
         rounds_left = PINK_LINES_ROUNDS - lines["round"]
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - dodge the pinks! ({max(0, rounds_left)} left)")
+    elif active_boss["kind"] == "pink" and active_boss.get("phase") == "guard":
+        left = sum(len(group) for group in (red_enemies, green_enemies, blue_enemies, purple_enemies, orange_enemies,
+                                            yellow_enemies, teal_enemies, pink_enemies, violet_enemies))
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - kill the enemies! ({left} left)")
     elif active_boss["kind"] == "pink" and active_boss.get("phase") == "gone":
         left = sum(len(group) for group in (red_enemies, green_enemies, blue_enemies, purple_enemies, orange_enemies,
                                             yellow_enemies, teal_enemies, pink_enemies, violet_enemies))
