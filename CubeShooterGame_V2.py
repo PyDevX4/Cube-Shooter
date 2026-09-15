@@ -559,9 +559,124 @@ def create_sand_surface(tile_size=128):
                     rng.choice([(190, 158, 104), (178, 144, 92), (246, 226, 180)]))
     return surf
 
-MAP_NAMES = ["Grass", "Snow", "Sand"]
-MAP_TEXTURES = {"Grass": grass_texture, "Snow": create_snow_surface(), "Sand": create_sand_surface()}
-MINIMAP_GROUND = {"Grass": (46, 96, 46, 230), "Snow": (170, 188, 205, 230), "Sand": (175, 145, 92, 230)}
+def _wrap_circle(surf, color, x, y, radius, tile_size, width=0):
+    for ox in (-tile_size, 0, tile_size):
+        for oy in (-tile_size, 0, tile_size):
+            pygame.draw.circle(surf, color, (x + ox, y + oy), radius, width)
+
+def _wrap_crack(surf, rng, color, tile_size, width, steps=7):
+    """A wandering crack line, drawn across the tile edges so it wraps."""
+    x, y = rng.uniform(0, tile_size), rng.uniform(0, tile_size)
+    points = [(x, y)]
+    a = rng.uniform(0, 2 * math.pi)
+    for _ in range(steps):
+        a += rng.uniform(-0.9, 0.9)
+        x, y = x + math.cos(a) * rng.uniform(8, 18), y + math.sin(a) * rng.uniform(8, 18)
+        points.append((x, y))
+    for ox in (-tile_size, 0, tile_size):
+        for oy in (-tile_size, 0, tile_size):
+            pygame.draw.lines(surf, color, False, [(px + ox, py + oy) for px, py in points], width)
+
+def create_magma_surface(tile_size=128):
+    """Obsidian with glowing lava cracks."""
+    rng = random.Random(21)
+    surf = pygame.Surface((tile_size, tile_size))
+    surf.fill((30, 26, 34))
+    for _ in range(16):
+        _wrap_circle(surf, rng.choice([(40, 34, 46), (22, 19, 26), (48, 40, 52)]), rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(8, 22), tile_size)
+    for _ in range(5):
+        seed = rng.random()
+        _wrap_crack(surf, random.Random(seed), (150, 40, 10), tile_size, 6)
+        _wrap_crack(surf, random.Random(seed), (255, 110, 20), tile_size, 3)
+        _wrap_crack(surf, random.Random(seed), (255, 210, 90), tile_size, 1)
+    for _ in range(5):
+        x, y = rng.randrange(tile_size), rng.randrange(tile_size)
+        _wrap_circle(surf, (230, 80, 15), x, y, rng.randint(3, 6), tile_size)
+        _wrap_circle(surf, (255, 190, 70), x, y, 2, tile_size)
+    for _ in range(60):
+        surf.set_at((rng.randrange(tile_size), rng.randrange(tile_size)), (90, 80, 105))
+    return surf
+
+def create_moon_surface(tile_size=128):
+    """Grey moon dust with craters."""
+    rng = random.Random(33)
+    surf = pygame.Surface((tile_size, tile_size))
+    surf.fill((150, 150, 156))
+    for _ in range(14):
+        _wrap_circle(surf, rng.choice([(158, 158, 164), (140, 140, 147), (165, 165, 170)]), rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(10, 24), tile_size)
+    for _ in range(7):
+        x, y, r = rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(4, 13)
+        _wrap_circle(surf, (185, 185, 190), x - 1, y - 1, r + 2, tile_size)  # Lit rim
+        _wrap_circle(surf, (112, 112, 120), x, y, r, tile_size)
+        _wrap_circle(surf, (128, 128, 135), x + r * 0.25, y + r * 0.25, r * 0.6, tile_size)
+    for _ in range(200):
+        surf.set_at((rng.randrange(tile_size), rng.randrange(tile_size)), rng.choice([(120, 120, 126), (180, 180, 186)]))
+    return surf
+
+def create_cave_surface(tile_size=128):
+    """Dark rocky cave floor with pebbles and a few glowing crystals."""
+    rng = random.Random(45)
+    surf = pygame.Surface((tile_size, tile_size))
+    surf.fill((62, 56, 52))
+    for _ in range(20):
+        _wrap_circle(surf, rng.choice([(72, 65, 60), (52, 47, 44), (80, 72, 66)]), rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(8, 20), tile_size)
+    for _ in range(4):
+        _wrap_crack(surf, rng, (38, 34, 32), tile_size, 2, steps=5)
+    for _ in range(14):
+        x, y, r = rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(3, 6)
+        _wrap_circle(surf, (40, 36, 34), x + 1, y + 2, r, tile_size)
+        _wrap_circle(surf, rng.choice([(100, 92, 86), (88, 80, 74)]), x, y, r, tile_size)
+    for _ in range(3):
+        x, y = rng.randrange(8, tile_size - 8), rng.randrange(8, tile_size - 8)
+        color = rng.choice([(90, 200, 255), (170, 110, 255)])
+        pygame.draw.polygon(surf, color, [(x, y - 7), (x + 4, y), (x, y + 5), (x - 4, y)])
+        pygame.draw.line(surf, (235, 250, 255), (x, y - 5), (x, y + 2), 1)
+    return surf
+
+def create_wasteland_surface(tile_size=128):
+    """Dry, cracked brown dirt with rubble."""
+    rng = random.Random(57)
+    surf = pygame.Surface((tile_size, tile_size))
+    surf.fill((128, 108, 80))
+    for _ in range(16):
+        _wrap_circle(surf, rng.choice([(118, 98, 72), (138, 118, 88), (104, 90, 70)]), rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(10, 24), tile_size)
+    for _ in range(9):
+        _wrap_crack(surf, rng, (76, 62, 46), tile_size, 2, steps=6)
+    for _ in range(12):
+        _wrap_circle(surf, rng.choice([(90, 80, 68), (150, 135, 110)]), rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(1, 3), tile_size)
+    for _ in range(180):
+        surf.set_at((rng.randrange(tile_size), rng.randrange(tile_size)), rng.choice([(100, 84, 62), (150, 130, 100)]))
+    return surf
+
+def create_swamp_surface(tile_size=128):
+    """Murky green mud with dark puddles and lily pads."""
+    rng = random.Random(69)
+    surf = pygame.Surface((tile_size, tile_size))
+    surf.fill((62, 82, 48))
+    for _ in range(18):
+        _wrap_circle(surf, rng.choice([(70, 92, 52), (54, 72, 42), (78, 96, 50)]), rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(8, 22), tile_size)
+    for _ in range(5):
+        x, y, r = rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(9, 18)
+        _wrap_circle(surf, (38, 58, 50), x, y, r, tile_size)
+        _wrap_circle(surf, (50, 74, 62), x - r * 0.3, y - r * 0.3, r * 0.4, tile_size)
+    for _ in range(6):
+        x, y = rng.randrange(tile_size), rng.randrange(tile_size)
+        _wrap_circle(surf, (96, 150, 60), x, y, 4, tile_size)
+        pygame.draw.line(surf, (62, 82, 48), (x, y), (x + 4, y - 2), 2)
+    for _ in range(140):
+        surf.set_at((rng.randrange(tile_size), rng.randrange(tile_size)), rng.choice([(44, 60, 36), (100, 120, 70)]))
+    return surf
+
+MAP_NAMES = ["Grass", "Snow", "Sand", "Magma", "Moon", "Cave", "Wasteland", "Swamp"]
+FREE_MAPS = ("Grass", "Snow", "Sand")
+MAP_PRICE = 500
+MAP_TEXTURES = {"Grass": grass_texture, "Snow": create_snow_surface(), "Sand": create_sand_surface(),
+                "Magma": create_magma_surface(), "Moon": create_moon_surface(), "Cave": create_cave_surface(),
+                "Wasteland": create_wasteland_surface(), "Swamp": create_swamp_surface()}
+MINIMAP_GROUND = {"Grass": (46, 96, 46, 230), "Snow": (170, 188, 205, 230), "Sand": (175, 145, 92, 230),
+                  "Magma": (40, 30, 36, 230), "Moon": (140, 140, 146, 230), "Cave": (62, 56, 52, 230),
+                  "Wasteland": (120, 100, 74, 230), "Swamp": (58, 78, 46, 230)}
+owned_maps = set(FREE_MAPS)
 selected_map = "Grass"
 
 def create_metal_surface(width, height):
@@ -1595,6 +1710,7 @@ def progress_state():
         "ability_slot": selected_ability_slot,
         "best_wave": best_wave,
         "map": selected_map,
+        "owned_maps": sorted(owned_maps),
         "checkpoints": checkpoints_on,
         "saved_games": [dict(s) for s in saved_games],
     }
@@ -1619,7 +1735,8 @@ def apply_progress(progress):
     select_ability_slot(g["selected_ability_slot"])
     g["shot_delay"] = g["main_game_shot_delay"] = GUN_SHOT_DELAYS[gun_level()]
     g["best_wave"] = int(progress.get("best_wave", 0))
-    g["selected_map"] = progress.get("map") if progress.get("map") in MAP_NAMES else "Grass"
+    g["owned_maps"] = set(FREE_MAPS) | {m for m in progress.get("owned_maps", []) if m in MAP_NAMES}
+    g["selected_map"] = progress.get("map") if progress.get("map") in g["owned_maps"] else "Grass"
     g["checkpoints_on"] = bool(progress.get("checkpoints", False))
     g["saved_games"] = [{"wave": int(s["wave"]), "checkpoint": int(s["checkpoint"]), "date": str(s.get("date", ""))}
                         for s in progress.get("saved_games", []) if isinstance(s, dict) and "wave" in s][:MAX_SAVED_GAMES]
@@ -2222,6 +2339,7 @@ def admin_give_everything():
         owned_skins[skin] = True
     for flag in UPGRADE_FLAGS:
         g[flag] = True
+    owned_maps.update(MAP_NAMES)
     shot_delay = GUN_SHOT_DELAYS[5]
     main_game_coins = coin_count = max(main_game_coins, 99999)
     g["sandbox_entry_coins"] = max(g["sandbox_entry_coins"], 99999)  # Still works from inside the Sandbox
@@ -5987,35 +6105,84 @@ PLAY_CENTER_X = min(WIDTH // 2, WIDTH - 650)  # Leaves room for the lobby panel
 PLAY_BUTTON = pygame.Rect(PLAY_CENTER_X - 160, HUB_VIEWPORT.y + 470, 320, 72)
 
 map_menu_open = False
-MAP_CURRENT_BOX = pygame.Rect(PLAY_CENTER_X - 150, HUB_VIEWPORT.y + 385, 200, 50)   # The map you're on
-MAP_SELECT_BUTTON = pygame.Rect(PLAY_CENTER_X + 62, HUB_VIEWPORT.y + 385, 140, 50)  # Opens the map menu
+MAP_SELECT_BUTTON = pygame.Rect(PLAY_CENTER_X - 20, HUB_VIEWPORT.y + 385, 170, 50)  # "Map: Grass [Select]" opens the map menu
+MAP_MENU_PANEL = pygame.Rect(WIDTH // 2 - 580, 100, 1160, 720)
+MAP_MENU_CLOSE = pygame.Rect(MAP_MENU_PANEL.right - 70, MAP_MENU_PANEL.y + 18, 50, 50)
 
-def map_button_rects():
-    """The rows of the drop-down map menu, under the Select button."""
-    top = MAP_CURRENT_BOX.bottom + 6
-    return [(name, pygame.Rect(MAP_CURRENT_BOX.x, top + i * 54, MAP_SELECT_BUTTON.right - MAP_CURRENT_BOX.x, 50))
-            for i, name in enumerate(MAP_NAMES)]
-
-def draw_map_row(name, rect, color):
-    draw_button(rect, color)
-    swatch = pygame.transform.smoothscale(MAP_TEXTURES[name], (34, 34))
-    swatch_rect = swatch.get_rect(midleft=(rect.x + 10, rect.centery))
-    screen.blit(swatch, swatch_rect)
-    pygame.draw.rect(screen, (40, 40, 40), swatch_rect, 2, border_radius=4)
-    text = smaller_button_font.render(name, True, BLACK)
-    screen.blit(text, text.get_rect(midleft=(swatch_rect.right + 12, rect.centery)))
+def map_card_rects():
+    """(name, card, button) for every map in the map menu, 4 across."""
+    cols, gap, w, h = 4, 20, 260, 280
+    left = MAP_MENU_PANEL.centerx - (cols * w + (cols - 1) * gap) // 2
+    rects = []
+    for i, name in enumerate(MAP_NAMES):
+        card = pygame.Rect(left + (i % cols) * (w + gap), MAP_MENU_PANEL.y + 110 + (i // cols) * (h + gap), w, h)
+        rects.append((name, card, pygame.Rect(card.x + 20, card.bottom - 56, card.width - 40, 42)))
+    return rects
 
 def draw_map_menu():
-    """The drop-down list of maps, drawn on top of everything on the Play tab."""
-    rows = map_button_rects()
-    panel = rows[0][1].union(rows[-1][1]).inflate(12, 12)
-    pygame.draw.rect(screen, (24, 27, 34), panel, border_radius=12)
-    pygame.draw.rect(screen, (90, 96, 110), panel, 2, border_radius=12)
-    for name, rect in rows:
-        draw_map_row(name, rect, GREEN if name == selected_map else BLUE)
+    """The map menu: every map with a picture. Pick one you own, or buy one for 500 coins."""
+    shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    shade.fill((0, 0, 0, 190))
+    screen.blit(shade, (0, 0))
+    pygame.draw.rect(screen, (22, 25, 32), MAP_MENU_PANEL, border_radius=20)
+    pygame.draw.rect(screen, (110, 116, 130), MAP_MENU_PANEL, 3, border_radius=20)
+    title = get_bubble_text("MAPS", 64, (255, 240, 150), (255, 160, 40))
+    screen.blit(title, title.get_rect(midtop=(MAP_MENU_PANEL.centerx, MAP_MENU_PANEL.y + 14)))
+    coins = coin_font.render(f"Coins: {main_game_coins}", True, (255, 222, 95))
+    screen.blit(coins, coins.get_rect(midleft=(MAP_MENU_PANEL.x + 30, MAP_MENU_PANEL.y + 48)))
+    draw_button(MAP_MENU_CLOSE, RED)
+    x_text = button_font.render("X", True, BLACK)
+    screen.blit(x_text, x_text.get_rect(center=MAP_MENU_CLOSE.center))
+    guest = multiplayer_guest()
+    for name, card, button in map_card_rects():
+        owned = name in owned_maps
+        draw_panel(card, highlight=name == selected_map)
+        picture = pygame.Surface((card.width - 30, 150))
+        tile = MAP_TEXTURES[name]
+        for tx in range(0, picture.get_width(), tile.get_width()):
+            for ty in range(0, picture.get_height(), tile.get_height()):
+                picture.blit(tile, (tx, ty))
+        if not owned:
+            dim = pygame.Surface(picture.get_size(), pygame.SRCALPHA)
+            dim.fill((0, 0, 0, 110))
+            picture.blit(dim, (0, 0))
+        spot = picture.get_rect(midtop=(card.centerx, card.y + 15))
+        screen.blit(picture, spot)
+        pygame.draw.rect(screen, (40, 40, 40), spot, 2)
+        label = coin_font.render(name, True, WHITE)
+        screen.blit(label, label.get_rect(center=(card.centerx, spot.bottom + 24)))
         if name == selected_map:
-            tick = smaller_button_font.render("selected", True, (40, 90, 50))
-            screen.blit(tick, tick.get_rect(midright=(rect.right - 14, rect.centery)))
+            color, text = GREEN, "Selected"
+        elif owned:
+            color, text = (GREY_BUTTON if guest else BLUE), "Select"
+        elif main_game_coins >= MAP_PRICE:
+            color, text = BLUE, f"Buy - {MAP_PRICE}"
+        else:
+            color, text = DARK_RED, f"Need {MAP_PRICE}"
+        draw_button(button, color)
+        button_text = small_button_font.render(text, True, BLACK)
+        screen.blit(button_text, button_text.get_rect(center=button.center))
+
+def handle_map_menu_click(pos):
+    """Pick an owned map (the host picks in multiplayer), buy a locked one, or close."""
+    global map_menu_open, selected_map, main_game_coins, coin_count, console_message, console_message_timer
+    if MAP_MENU_CLOSE.collidepoint(pos) or not MAP_MENU_PANEL.collidepoint(pos):
+        map_menu_open = False
+        return
+    for name, card, button in map_card_rects():
+        if not card.collidepoint(pos):
+            continue
+        if name in owned_maps:
+            if not multiplayer_guest():
+                selected_map = name
+                map_menu_open = False
+        elif button.collidepoint(pos) and main_game_coins >= MAP_PRICE:
+            main_game_coins -= MAP_PRICE
+            coin_count = main_game_coins
+            owned_maps.add(name)
+            sounds.play("buy")
+            console_message, console_message_timer = f"Bought the {name} map!", 2.5
+        return
 
 def mode_row_rects():
     return [(name, pygame.Rect(PLAY_CENTER_X - 280, HUB_VIEWPORT.y + 20 + i * 62, 560, 54))
@@ -6035,16 +6202,11 @@ def draw_play_tab():
     info = coin_font.render(description, True, (210, 215, 222))
     screen.blit(info, info.get_rect(center=(PLAY_CENTER_X, HUB_VIEWPORT.y + 350)))
     # Map picker: works for every mode
-    map_label = coin_font.render("Map:", True, WHITE)
-    screen.blit(map_label, map_label.get_rect(midright=(MAP_CURRENT_BOX.x - 14, MAP_CURRENT_BOX.centery)))
-    draw_map_row(selected_map, MAP_CURRENT_BOX, GREEN)
-    draw_button(MAP_SELECT_BUTTON, GREY_BUTTON if multiplayer_guest() else BLUE)
-    select_text = small_button_font.render("Select", True, BLACK)
-    text_rect = select_text.get_rect(center=(MAP_SELECT_BUTTON.centerx - 12, MAP_SELECT_BUTTON.centery))
-    screen.blit(select_text, text_rect)
-    ax, ay = text_rect.right + 16, MAP_SELECT_BUTTON.centery  # Little arrow: down when closed, up when open
-    flip = -1 if map_menu_open else 1
-    pygame.draw.polygon(screen, BLACK, [(ax - 8, ay - 4 * flip), (ax + 8, ay - 4 * flip), (ax, ay + 5 * flip)])
+    map_label = coin_font.render(f"Map: {selected_map}", True, WHITE)
+    screen.blit(map_label, map_label.get_rect(midright=(MAP_SELECT_BUTTON.x - 16, MAP_SELECT_BUTTON.centery)))
+    draw_button(MAP_SELECT_BUTTON, BLUE)
+    select_text = button_font.render("Select", True, BLACK)
+    screen.blit(select_text, select_text.get_rect(center=MAP_SELECT_BUTTON.center))
     waiting = multiplayer_guest() or (play_multiplayer and not net.lobby)
     draw_button(PLAY_BUTTON, GREY_BUTTON if waiting else GREEN)
     if multiplayer_guest():
@@ -6733,19 +6895,16 @@ def start_selected_mode():
 
 def handle_play_tab_click(pos):
     global selected_mode, selected_map, map_menu_open
-    if map_menu_open:  # The open menu takes the click: pick a map, or click anywhere else to close it
-        map_menu_open = False
-        for name, rect in map_button_rects():
-            if rect.collidepoint(pos) and not multiplayer_guest():
-                selected_map = name
+    if map_menu_open:
+        handle_map_menu_click(pos)
         return
     if handle_waves_panel_click(pos) or handle_lobby_click(pos):
         return
+    if MAP_SELECT_BUTTON.collidepoint(pos):
+        map_menu_open = True  # Guests can look (and buy), the host picks
+        return
     if multiplayer_guest():
         return  # The host chooses and starts
-    if MAP_SELECT_BUTTON.collidepoint(pos) or MAP_CURRENT_BOX.collidepoint(pos):
-        map_menu_open = True
-        return
     for name, rect in mode_row_rects():
         if rect.collidepoint(pos):
             if not (play_multiplayer and name in MULTIPLAYER_SOLO_MODES):
@@ -7074,7 +7233,7 @@ def draw_hub():
         draw_settings_content()
 
 def handle_hub_event(event):
-    global hub_open, start_screen, hub_tab
+    global hub_open, start_screen, hub_tab, map_menu_open
     global shop_upgrade_scroll_target, ability_scroll_target, locker_scroll_target
     if event.type == pygame.MOUSEWHEEL:
         step = event.y * 80
@@ -7087,6 +7246,12 @@ def handle_hub_event(event):
         elif hub_tab == "Locker":
             locker_scroll_target = max(0, min(max_card_scroll(len(locker_items()), LOCKER_VIEWPORT),
                                               locker_scroll_target - step))
+        return
+    if hub_tab == "Play" and map_menu_open:  # The map menu has the screen
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            map_menu_open = False
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            handle_map_menu_click(getattr(event, "pos", None) or pygame.mouse.get_pos())
         return
     if hub_tab == "Play" and event.type == pygame.KEYDOWN and handle_lobby_key(event):
         return
