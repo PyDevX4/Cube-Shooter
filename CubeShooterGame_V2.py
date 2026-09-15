@@ -1653,15 +1653,16 @@ UPGRADE_FLAGS = ["has_gun_upgrade", "has_gun_upgrade_1", "has_gun_upgrade_2", "h
                  "has_shockwave", "has_helpers", "has_coin_controller", "has_triple_bullet", "has_full_auto"]
 # Gun add-ons: only one equipped at a time
 GUN_ADDONS = [{"key": "full_auto", "name": "Full Auto", "flag": "has_full_auto", "price": 1500,
-               "about": "Hold the mouse to keep shooting"}]
+               "about": "Hold the mouse to keep shooting"},
+              {"key": "triple_bullet", "name": "Triple Bullet", "flag": "has_triple_bullet", "price": 2000,
+               "about": "3 bullets, half the fire rate"}]
 has_full_auto = False
 main_game_has_full_auto = False
 gun_addon = None  # The equipped add-on's key
 # Abilities: key, display name, icon color, price
-ABILITIES = [("freeze", "Freeze", (150, 220, 255), 1500), ("shield", "Shield", (90, 160, 255), 1500),
-             ("teleport", "Teleport", (190, 120, 255), 1300), ("helpers", "Helpers", (255, 210, 90), 1800),
-             ("shockwave", "Shockwave", (255, 140, 60), 2000),
-             ("coin_controller", "Coin Controller", (255, 215, 40), 1300), ("triple_bullet", "Triple Bullet", (255, 90, 120), 1600)]
+ABILITIES = [("freeze", "Freeze", (150, 220, 255), 1750), ("shield", "Shield", (90, 160, 255), 2000),
+             ("teleport", "Teleport", (190, 120, 255), 1500), ("helpers", "Clones", (255, 210, 90), 3500),
+             ("shockwave", "Shockwave", (255, 140, 60), 2750)]
 ABILITY_ICON_SIZE = 84
 ability_icon_cache = {}
 DAILY_SKIN_POOL = [skin for skin in shop_skins if skin not in ("white", "black")]
@@ -1737,7 +1738,7 @@ def apply_progress(progress):
         g[flag] = g["main_game_" + flag] = bool(upgrades.get(flag, False))
     ability = progress.get("equipped_ability")
     slots = progress.get("ability_slots") or [ability, None, None]  # Older saves had one equipped ability
-    g["ability_slots"] = [s if s and g.get("has_" + s) else None for s in (list(slots) + [None, None, None])[:3]]
+    g["ability_slots"] = [s if s and g.get("has_" + s) and any(s == a[0] for a in ABILITIES) else None for s in (list(slots) + [None, None, None])[:3]]
     g["selected_ability_slot"] = int(progress.get("ability_slot", 0)) % 3
     select_ability_slot(g["selected_ability_slot"])
     g["shot_delay"] = g["main_game_shot_delay"] = GUN_SHOT_DELAYS[gun_level()]
@@ -6004,6 +6005,7 @@ HUB_VIEWPORT = pygame.Rect(0, 186, WIDTH, HEIGHT - 196)
 
 SHOP_ICONS = {"gun": create_orb_sprite((120, 200, 255), 30, glow=8),
               "full_auto": create_orb_sprite((255, 120, 70), 30, glow=8),
+              "triple_bullet": create_orb_sprite((255, 90, 120), 30, glow=8),
               "magnet": create_orb_sprite((255, 200, 60), 30, glow=8)}
 
 def ability_icon(key):
@@ -7896,13 +7898,13 @@ while running:
                     # Don't shoot in editor mode
                     if not (in_shooting_range and shooting_range_editor_mode):
                         current_time = pygame.time.get_ticks() / 1000
-                        if current_time - last_shot_time >= shot_delay:
+                        if current_time - last_shot_time >= shot_delay * (2 if gun_addon == "triple_bullet" else 1):
                             bullet_speed = 10
                             center_x = orbit_x + mini_size // 2
                             center_y = orbit_y + mini_size // 2
                             tip_offset = mini_size // 2
                             
-                            if triple_bullet_active:
+                            if gun_addon == "triple_bullet":  # Gun add-on: 3 bullets at half the fire rate
                                 # Shoot three bullets in a spread pattern
                                 angles = [last_rot_angle - 0.3, last_rot_angle, last_rot_angle + 0.3]  # 30-degree spread
                                 for angle in angles:
