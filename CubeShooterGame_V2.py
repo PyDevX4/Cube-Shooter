@@ -3443,6 +3443,17 @@ WAVES = {
     155: {"pink": 20, "orange": 15, "green": 30, "blue": 15}, 156: {"teal": 25, "purple": 10, "violet": 12, "yellow": 12},
     157: {"red": 30, "green": 20, "blue": 15, "pink": 15, "orange": 10, "yellow": 10}, 158: {"violet": 18, "teal": 20, "purple": 12, "pink": 18, "orange": 12},
     159: {"pink": 25, "violet": 15, "teal": 20, "yellow": 15, "orange": 15, "blue": 10},
+    161: {"red": 35, "green": 25, "pink": 18, "violet": 10}, 162: {"blue": 20, "teal": 22, "orange": 14},
+    163: {"yellow": 18, "purple": 12, "red": 30, "pink": 12}, 164: {"violet": 16, "green": 35, "teal": 15},
+    165: {"pink": 22, "orange": 16, "blue": 20, "red": 25}, 166: {"teal": 25, "yellow": 16, "violet": 14, "green": 20},
+    167: {"red": 45, "purple": 14, "pink": 16, "orange": 10}, 168: {"blue": 25, "violet": 18, "teal": 20, "yellow": 12},
+    169: {"pink": 24, "green": 35, "orange": 16, "purple": 10}, 170: {"red": 40, "blue": 25, "teal": 22, "violet": 14},
+    171: {"yellow": 20, "orange": 18, "pink": 20, "green": 25}, 172: {"violet": 20, "purple": 14, "teal": 24, "red": 25},
+    173: {"pink": 26, "blue": 25, "yellow": 16, "orange": 14}, 174: {"green": 40, "violet": 18, "teal": 20, "purple": 12},
+    175: {"red": 35, "green": 25, "blue": 20, "pink": 20, "orange": 12, "yellow": 12},
+    176: {"violet": 22, "teal": 26, "pink": 22, "orange": 16}, 177: {"purple": 16, "yellow": 20, "red": 40, "violet": 16},
+    178: {"pink": 28, "teal": 26, "blue": 25, "orange": 18, "green": 20},
+    179: {"pink": 30, "violet": 20, "teal": 25, "yellow": 18, "orange": 18, "purple": 12, "red": 20},
 }
 
 def wave_spawn_counts(number):
