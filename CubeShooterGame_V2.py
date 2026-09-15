@@ -114,7 +114,11 @@ main_game_owned_skins = {
     "rainbow": False,
     "galaxy": False,
     "lava": False,
-    "water": False
+    "water": False,
+    "teal": False,
+    "pink": False,
+    "violet": False,
+    "navy": False
 }  # Store owned skins from main game mode
 # Store upgrade states from main game mode
 main_game_has_gun_upgrade = False
@@ -154,7 +158,11 @@ owned_skins = {
     "rainbow": False,  # new rainbow skin
     "galaxy": False,  # new galaxy skin
     "lava": False,  # new lava skin
-    "water": False  # new water skin
+    "water": False,  # new water skin
+    "teal": False,
+    "pink": False,
+    "violet": False,
+    "navy": False
 }
 
 skin_colors = {
@@ -168,12 +176,17 @@ skin_colors = {
     "purple": PURPLE,
     "lava": (255, 69, 0),  # Lava orange-red color
     "water": (0, 150, 255),  # Water blue color
+    "teal": (40, 215, 200),     # Same colours as the enemies
+    "pink": (255, 105, 180),
+    "violet": (190, 150, 255),
+    "navy": (30, 50, 140),      # Navy blue (the next enemy)
     # rainbow handled separately
     # galaxy handled separately
 }
 
 # List of skins in shop order
-shop_skins = ["white", "black", "red", "galaxy", "orange", "yellow", "green", "blue", "purple", "lava", "water", "rainbow"]
+shop_skins = ["white", "black", "red", "galaxy", "orange", "yellow", "green", "blue", "purple", "lava", "water", "rainbow",
+              "teal", "pink", "violet", "navy"]
 
 current_skin = "white"
 
