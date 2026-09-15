@@ -2107,8 +2107,9 @@ def set_boss_health(kind, health):
         elif health == 25:
             teal_boss_start_guard(boss, 25)
     if kind == "pink":
-        boss["events_done"] = [at for at in (175, 150, 125, 100, 75, 50) if at > health]
+        boss["events_done"] = [at for at in (175, 150, 125, 100, 75, 50, 25) if at > health]
         boss["lines"], boss["shielded"] = None, False
+        boss["hunt"] = {"dashes": 0, "time": 0.0} if health < 50 else None
         if boss["phase"] not in ("start", "aim", "dash", "rest"):
             boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
             boss["phase"], boss["timer"] = "rest", 0.5
@@ -2124,6 +2125,8 @@ def set_boss_health(kind, health):
             pink_boss_start_guard(boss)
         elif health == 50:
             pink_boss_start_lines(boss, 50)
+        elif health == 25:
+            pink_boss_start_25(boss)
         elif 50 < health < 100:
             boss["phase"], boss["zigzag"] = "zigzag", {"state": "pause", "timer": PINK_ZIGZAG_PAUSE, "dir": (1, 1)}
     if kind == "yellow":
@@ -3509,7 +3512,11 @@ PINK_ZIGZAG_SPEED = 700         # ...at this speed (slower than a pink's 1100)..
 PINK_ZIGZAG_PAUSE = 0.3         # ...with this stop between them, and no warning
 PINK_BOSS_ZIGZAG_SPAWNS = {100: {"yellow": 50}, 75: {"yellow": 50, "orange": 25}}
 PINK_BOSS_GUARD_75 = {"pink": 50}
-PINK_LINES_WARNING_50 = 0.45    # At 50: the 150 lines again, with a shorter warning
+PINK_MEMORY_ROUNDS_50 = 30      # At 50: the 100 memory lines again, 30 rounds
+PINK_HUNT_DASHES = 3            # 50-0: 3 single dashes like 200-175...
+PINK_HUNT_ZIGZAG_TIME = 10.0    # ...then 10 s zigzagging after the player like 100-75, and loop
+PINK_HUNT_AIM = {50: PINK_BOSS_AIM_TIME, 25: 0.4}   # Warning before each dash (shorter below 25)
+PINK_BOSS_SPAWN_AT_25 = {"blue": 75}
 # Orange Boss: four laser guns on a turret, in four stages, with a shielded laser-lines event at 75, 50 and 25.
 YELLOW_BOSS_ORB_DISTANCE = BOSS_RADIUS + 70
 YELLOW_BOSS_ORB_RADIUS = 30
@@ -3682,7 +3689,10 @@ def pink_boss_pick_target(boss):
     px, py = tx + player_size / 2, ty + player_size / 2
     boss["dash_speed"] = None
     aims = [(px, py)]
-    if boss["health"] <= 150:
+    hunt = boss.get("hunt")
+    if hunt:
+        hunt["dashes"] += 1
+    if boss["health"] <= 150 and not hunt:
         a, r = random.uniform(0, 2 * math.pi), random.uniform(PINK_BOSS_NEAR_SCATTER * 0.4, PINK_BOSS_NEAR_SCATTER)
         aims.append((px + math.cos(a) * r, py + math.sin(a) * r))  # Somewhere in the area around the player
         vx, vy = boss.get("player_vel", (0.0, 0.0))
@@ -3696,6 +3706,8 @@ def pink_boss_pick_target(boss):
         fx, fy = end
     boss["plan"] = plan
     boss["aim_len"] = PINK_BOSS_CHAIN_AIM if len(plan) > 1 else PINK_BOSS_AIM_TIME
+    if hunt:
+        boss["aim_len"] = PINK_HUNT_AIM[25 if boss["health"] <= 25 else 50]
     boss["target"] = plan[0]
     boss["angle"] = math.atan2(plan[0][1] - boss["y"], plan[0][0] - boss["x"])
 
@@ -3753,7 +3765,10 @@ def update_pink_boss(boss, dt):
         if boss["timer"] <= 0:
             boss["phase"] = "dash"
     elif phase == "rest":
-        if boss["timer"] <= 0:
+        if boss["timer"] <= 0 and boss.get("hunt") and boss["hunt"]["dashes"] >= PINK_HUNT_DASHES:
+            pink_boss_start_zigzag(boss, None)  # 3 dashes done: chase the player for 10 s
+            boss["hunt"]["time"] = PINK_HUNT_ZIGZAG_TIME
+        elif boss["timer"] <= 0:
             pink_boss_pick_target(boss)
             boss["phase"], boss["timer"] = "aim", boss["aim_len"]
     elif phase == "exit":
@@ -3792,6 +3807,12 @@ def update_pink_boss(boss, dt):
         update_pink_lines(boss, dt)
     elif phase == "zigzag":
         update_pink_zigzag(boss, dt)
+        hunt = boss.get("hunt")
+        if hunt:
+            hunt["time"] -= dt
+            if hunt["time"] <= 0:  # Back to the 3 dashes
+                hunt["dashes"] = 0
+                boss["phase"], boss["timer"] = "rest", 0.0
     elif phase == "guard":
         if not any_enemies_alive():  # His 75 wave is dead: shield down, zigzag again with yellows and oranges
             pink_boss_start_zigzag(boss, 75)
@@ -3820,11 +3841,11 @@ def pink_boss_start_lines(boss, at=150):
     boss["phase"] = "lines"
     boss["lines"] = {"round": 0, "phase": "warning", "timer": PINK_LINES_WARNING, "runners": [],
                      "dir": random.choice((1, -1)), "offset": random.uniform(0, PINK_LINES_SPACING)}
-    if at == 100:
+    boss["lines"]["at"] = at
+    boss["lines"]["rounds"] = PINK_MEMORY_ROUNDS_50 if at == 50 else PINK_LINES_ROUNDS
+    boss["hunt"] = None
+    if at in (100, 50):
         pink_memory_new_round(boss["lines"])
-    elif at == 50:
-        boss["lines"]["warning"] = PINK_LINES_WARNING_50
-        boss["lines"]["timer"] = PINK_LINES_WARNING_50
 
 def pink_memory_new_round(lines):
     """Pick this round's 3 line sets (each its own diagonal and spacing) and start flashing the first."""
@@ -3892,8 +3913,13 @@ def update_pink_lines(boss, dt):
             lines["phase"], lines["timer"] = "gap", PINK_LINES_GAP
         elif lines["phase"] == "gap" and lines["timer"] <= 0:
             lines["round"] += 1
-            if lines["round"] >= PINK_LINES_ROUNDS:
+            if lines["round"] >= lines["rounds"]:
                 boss["lines"] = None
+                if lines["at"] == 50:  # 50-0: 3 dashes, 10 s zigzag, loop
+                    boss["shielded"], boss["ripple"] = False, 0.4
+                    boss["hunt"] = {"dashes": 0, "time": 0.0}
+                    boss["phase"], boss["timer"] = "rest", 0.5
+                    return
                 pink_boss_start_zigzag(boss, 100)  # 100-75: zigzags like a pink enemy, and 50 yellows come in
                 return
             pink_memory_new_round(lines)
@@ -3907,7 +3933,7 @@ def update_pink_lines(boss, dt):
         lines["phase"], lines["timer"] = "gap", PINK_LINES_GAP
     elif lines["phase"] == "gap" and lines["timer"] <= 0:
         lines["round"] += 1
-        if lines["round"] >= PINK_LINES_ROUNDS:
+        if lines["round"] >= lines["rounds"]:
             # (Not designed yet past here: for now his shield drops and he goes back to dashing)
             boss["lines"] = None
             boss["shielded"], boss["ripple"] = False, 0.4
@@ -3947,7 +3973,8 @@ def pink_boss_start_zigzag(boss, at):
     boss["shielded"], boss["ripple"] = False, 0.4
     boss["phase"] = "zigzag"
     boss["zigzag"] = {"state": "pause", "timer": PINK_ZIGZAG_PAUSE, "dir": (1, 1)}
-    spawn_minions_any(PINK_BOSS_ZIGZAG_SPAWNS[at])
+    if at in PINK_BOSS_ZIGZAG_SPAWNS:
+        spawn_minions_any(PINK_BOSS_ZIGZAG_SPAWNS[at])
 
 def update_pink_zigzag(boss, dt):
     zz = boss["zigzag"]
@@ -3982,6 +4009,16 @@ def pink_boss_start_guard(boss):
     boss["shielded"], boss["ripple"] = True, 0.4
     boss["phase"] = "guard"
     spawn_minions_any(PINK_BOSS_GUARD_75)
+
+def pink_boss_start_25(boss):
+    """At 25: 75 blues come in, and he keeps looping dashes + zigzag with a shorter warning."""
+    boss["events_done"].append(25)
+    boss["health"] = 25
+    if not boss.get("hunt"):
+        boss["lines"], boss["shielded"] = None, False
+        boss["hunt"] = {"dashes": 0, "time": 0.0}
+        boss["phase"], boss["timer"] = "rest", 0.5
+    spawn_minions_any(PINK_BOSS_SPAWN_AT_25)
 
 def pink_boss_visible(boss):
     return boss["phase"] not in ("gone", "return")
@@ -4860,6 +4897,8 @@ def hurt_boss(amount=1, force=False):
             pink_boss_start_guard(boss)
         elif boss["health"] <= 50 and 50 not in boss["events_done"] and boss["health"] > 0:
             pink_boss_start_lines(boss, 50)
+        elif boss["health"] <= 25 and 25 not in boss["events_done"] and boss["health"] > 0:
+            pink_boss_start_25(boss)
         amount = 0
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
@@ -5313,7 +5352,7 @@ def draw_boss_health():
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"Dodge the teals! ({max(0, min(total, rounds_left))} left)")
     elif active_boss["kind"] == "pink" and active_boss.get("lines"):
         lines = active_boss["lines"]
-        rounds_left = PINK_LINES_ROUNDS - lines["round"]
+        rounds_left = lines.get("rounds", PINK_LINES_ROUNDS) - lines["round"]
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - dodge the pinks! ({max(0, rounds_left)} left)")
     elif active_boss["kind"] == "pink" and active_boss.get("phase") == "guard":
         left = sum(len(group) for group in (red_enemies, green_enemies, blue_enemies, purple_enemies, orange_enemies,
