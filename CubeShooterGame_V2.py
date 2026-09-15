@@ -3973,6 +3973,7 @@ def update_pink_zigzag(boss, dt):
 
 def pink_boss_start_guard(boss):
     """At 75: he goes to the middle, shields up and calls in 50 pinks. Once they're all dead he zigzags again."""
+    kill_all_enemies_no_coins()  # Anything left from 100-75 dies
     boss["events_done"].append(75)
     boss["health"] = 75
     boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
