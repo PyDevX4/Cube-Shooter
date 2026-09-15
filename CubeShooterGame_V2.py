@@ -678,6 +678,82 @@ def draw_orb(orb, shadow, cx, cy):
 SKIN_TEXTURES = {"galaxy": galaxy_texture, "lava": lava_texture, "water": water_texture}
 SKIN_GLOWS = {"galaxy": (100, 150, 255), "lava": (255, 69, 0), "water": (0, 150, 255), "black": (110, 110, 130)}
 
+# ---- Animated skins: little effects that stay on the cube's face (pre-drawn frames that loop) ----
+SKIN_ANIM_FRAMES = 40
+SKIN_ANIM_SECONDS = 3.0
+SKIN_ANIM_SIZE = 96
+
+def _make_skin_frames(skin):
+    size = SKIN_ANIM_SIZE
+    base = pygame.transform.smoothscale(SKIN_TEXTURES[skin], (size, size))
+    rng = random.Random(skin)
+    frames = []
+    if skin == "galaxy":
+        stars = [(rng.uniform(0, size), rng.uniform(0, size), rng.uniform(0, 2 * math.pi), rng.choice((1, 1, 2))) for _ in range(22)]
+        comet = rng.uniform(0, 1)
+        big = pygame.transform.smoothscale(SKIN_TEXTURES[skin], (int(size * 1.45), int(size * 1.45)))
+    elif skin == "lava":
+        embers = [(rng.uniform(4, size - 4), rng.uniform(0, 1), rng.uniform(0.6, 1.4), rng.uniform(1.5, 3)) for _ in range(12)]
+        blobs = [(rng.uniform(10, size - 10), rng.uniform(10, size - 10), rng.uniform(8, 16), rng.uniform(0, 2 * math.pi)) for _ in range(5)]
+    else:
+        sparkles = [(rng.uniform(0, size), rng.uniform(0, size), rng.uniform(0, 1)) for _ in range(10)]
+    for f in range(SKIN_ANIM_FRAMES):
+        p = f / SKIN_ANIM_FRAMES          # 0..1 through the loop
+        a = p * 2 * math.pi
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        if skin == "galaxy":
+            # The galaxy slowly turns, stars twinkle, and a shooting star crosses now and then
+            turned = pygame.transform.rotate(big, -p * 360)
+            surf.blit(turned, turned.get_rect(center=(size / 2, size / 2)))
+            for x, y, phase, r in stars:
+                glow = 0.5 + 0.5 * math.sin(a * 2 + phase)
+                pygame.draw.circle(surf, (255, 255, 255, int(60 + 195 * glow)), (x, y), r)
+            q = (p + comet) % 1.0
+            if q < 0.25:
+                k = q / 0.25
+                hx, hy = -10 + (size + 20) * k, size * 0.2 + size * 0.5 * k
+                for j in range(8):
+                    pygame.draw.circle(surf, (220, 230, 255, int(230 * (1 - j / 8))), (hx - j * 3, hy - j * 1.5), max(1, 2 - j // 4))
+        elif skin == "lava":
+            surf.blit(base, (0, 0))
+            heat = pygame.Surface((size, size), pygame.SRCALPHA)
+            for x, y, r, phase in blobs:  # Molten pools swelling and glowing brighter
+                pulse = 0.5 + 0.5 * math.sin(a + phase)
+                pygame.draw.circle(heat, (int(90 + 60 * pulse), int(25 + 30 * pulse), 0, 255), (x, y), r * (0.8 + 0.3 * pulse))
+                pygame.draw.circle(heat, (int(60 + 60 * pulse), int(40 + 40 * pulse), int(10 * pulse), 255), (x, y), r * 0.4 * (0.8 + 0.3 * pulse))
+            surf.blit(heat, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+            for x, start, speed, r in embers:  # Embers rising up the face and fading
+                k = (start + p * speed) % 1.0
+                ey = size - k * size
+                ex = x + math.sin(a * 2 + x) * 3
+                pygame.draw.circle(surf, (255, int(200 - 120 * k), 40, int(255 * (1 - k))), (ex, ey), r * (1 - 0.5 * k))
+        else:
+            surf.blit(base, (0, 0))
+            # Waves sliding across the face
+            for row in range(5):
+                y0 = size * (row + 0.5) / 5
+                points = [(x, y0 + math.sin(x / size * 2 * math.pi * 2 + a + row) * 3) for x in range(0, size + 1, 6)]
+                pygame.draw.lines(surf, (200, 240, 255, 110), False, points, 2)
+            shine = pygame.Surface((size, size), pygame.SRCALPHA)  # A band of light rippling across
+            bx = -size * 0.4 + p * size * 1.8
+            pygame.draw.polygon(shine, (255, 255, 255, 45), [(bx, 0), (bx + 18, 0), (bx - 22, size), (bx - 40, size)])
+            surf.blit(shine, (0, 0))
+            for x, y, phase in sparkles:  # Glints popping on the surface
+                g2 = max(0.0, math.sin(a * 3 + phase * 6))
+                if g2 > 0.3:
+                    pygame.draw.circle(surf, (255, 255, 255, int(255 * g2)), (x, y), 1 + g2 * 1.5)
+        frames.append(surf)
+    return frames
+
+SKIN_FRAMES = {skin: _make_skin_frames(skin) for skin in SKIN_TEXTURES}
+
+def animated_skin_texture(skin, t=None):
+    """This moment's frame of an animated skin (galaxy, lava, water)."""
+    if t is None:
+        t = pygame.time.get_ticks() / 1000.0
+    frames = SKIN_FRAMES[skin]
+    return frames[int(t / SKIN_ANIM_SECONDS * SKIN_ANIM_FRAMES) % SKIN_ANIM_FRAMES]
+
 def draw_player_cube(x, y, face, glow_color, aim_angle, size=None):
     """Draw the player as a beveled 3D cube: ground shadow, soft glow, shaded face (color or texture),
     light/dark bevel edges and a visor that slides toward where you're aiming."""
@@ -5606,7 +5682,7 @@ def skin_face(skin, t):
     if skin == "rainbow":
         return rainbow_color_cycle(t, 2.0)
     if skin in SKIN_TEXTURES:
-        return SKIN_TEXTURES[skin]
+        return animated_skin_texture(skin, t)
     return skin_colors.get(skin, WHITE)
 
 def draw_skin_preview(card, skin, t, seed):
@@ -6040,7 +6116,7 @@ def draw_remote_players():
             color = rainbow_color_cycle(pygame.time.get_ticks() / 1000.0, 2.0)
         else:
             color = skin_colors.get(skin, WHITE)
-        face = SKIN_TEXTURES.get(skin, color)
+        face = animated_skin_texture(skin) if skin in SKIN_TEXTURES else color
         sx, sy = player["x"] - camera_x, player["y"] - camera_y
         if not on_screen(sx + player_size / 2, sy + player_size / 2, 120):
             continue
@@ -8144,7 +8220,7 @@ while running:
 
         # Draw the player as a beveled 3D cube (skin texture or color) with a visor aimed at the mouse
         if current_skin in SKIN_TEXTURES and owned_skins[current_skin]:
-            player_face = SKIN_TEXTURES[current_skin]
+            player_face = animated_skin_texture(current_skin)
         else:
             player_face = player_color
         if not game_over and not spectating:  # On the frame the player dies they shatter instead (see the death snapshot further down)
@@ -8409,7 +8485,7 @@ while running:
                 # Textured skins: the texture in a soft glow, turned to face the aim direction
                 mini_surface = pygame.Surface((mini_size + 6, mini_size + 6), pygame.SRCALPHA)
                 pygame.draw.circle(mini_surface, (*SKIN_GLOWS[current_skin], 60), (mini_size // 2 + 3, mini_size // 2 + 3), mini_size // 2 + 3)
-                mini_surface.blit(pygame.transform.smoothscale(SKIN_TEXTURES[current_skin], (mini_size, mini_size)), (3, 3))
+                mini_surface.blit(pygame.transform.smoothscale(animated_skin_texture(current_skin), (mini_size, mini_size)), (3, 3))
                 rotated_mini = pygame.transform.rotate(mini_surface, -math.degrees(last_rot_angle))
                 screen.blit(rotated_mini, rotated_mini.get_rect(center=mini_center))
             else:
