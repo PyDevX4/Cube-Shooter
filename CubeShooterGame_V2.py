@@ -1625,6 +1625,8 @@ def log_out():
     if online_session is not None:
         cube_online.log_out(online_session)
         online_session = None
+    globals()["admin_unlocked"] = False
+    close_console_stack()
     set_play_multiplayer(False)
     net.close()
     login_remember = False
@@ -1712,6 +1714,7 @@ def online_attempt(create):
         login_message_ok = False
         return
     online_session = session
+    globals()["admin_unlocked"] = session.is_admin
     login_message_ok = True
     log_in_as({"name": session.name, "progress": progress}, message)
 
@@ -1886,7 +1889,7 @@ console_anim = 0.0        # 0 = hidden, 1 = fully dropped down
 admin_code_open = False   # The "Enter code" box you get after typing admin
 admin_code_input = ""
 admin_panel_open = False
-admin_unlocked = False    # Commands only work once "admin" + the right code has been entered (until the game closes)
+admin_unlocked = False    # True while logged in to an admin account (players.is_admin in Supabase): the ` console works
 CONSOLE_BAR = pygame.Rect(WIDTH // 2 - 380, 0, 760, 74)
 ADMIN_GIVE_BUTTON = pygame.Rect(WIDTH // 2 - 170, 420, 340, 60)
 ADMIN_SHOP_BUTTON = pygame.Rect(WIDTH // 2 - 170, 492, 340, 60)
@@ -2070,12 +2073,11 @@ def run_console_command(text):
     if command == "admin":
         console_open = False
         console_input = ""
-        admin_code_open = True
-        admin_code_input = ""
+        globals()["admin_panel_open"] = True  # Your account is an admin, so no code needed
         return
     compact = command.replace(" ", "")
     if not admin_unlocked:
-        console_message, console_message_timer = "Commands need admin: type admin and enter the code", 3.0
+        console_message, console_message_timer = "Commands are for admin accounts only", 3.0
         console_input = ""
         return
     if compact == "respawn":
@@ -7142,6 +7144,7 @@ if _remembered_online is not None:
     try:
         show_login_status("Logging in...")
         online_session, _progress = cube_online.resume(_remembered_online[1])
+        admin_unlocked = online_session.is_admin
         login_remember = True
         log_in_as({"name": online_session.name, "progress": newest_progress(online_session, _progress)},
                   f"Welcome back, {online_session.name}!")
@@ -7205,6 +7208,8 @@ while running:
 
         # Code console: ` drops the typing bar down from the top, on any screen or game mode
         if event.type == pygame.KEYDOWN and (event.key == pygame.K_BACKQUOTE or event.unicode == "`"):
+            if not admin_unlocked:
+                continue  # Not an admin account: ` does nothing
             if console_open or admin_code_open or admin_panel_open:
                 close_console_stack()
             else:

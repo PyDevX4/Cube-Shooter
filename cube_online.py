@@ -70,6 +70,7 @@ class Session(object):
         self.refresh_token = auth["refresh_token"]
         self.expires_at = time.time() + int(auth.get("expires_in", 3600)) - 60
         self.name = ""
+        self.is_admin = False  # Set in Supabase (players.is_admin) - players can't change it themselves
         self.lock = threading.Lock()
         self.on_new_refresh_token = None  # Called with the new token each time it changes (for "Remember me")
 
@@ -89,7 +90,10 @@ def username_taken(username):
 
 
 def _load_row(session):
-    rows = _request("GET", "/rest/v1/players?id=eq.%s&select=username,progress" % session.user_id, token=session.token())
+    try:
+        rows = _request("GET", "/rest/v1/players?id=eq.%s&select=username,progress,is_admin" % session.user_id, token=session.token())
+    except ServerError:  # The is_admin column hasn't been added yet (supabase_setup.sql): nobody is an admin
+        rows = _request("GET", "/rest/v1/players?id=eq.%s&select=username,progress" % session.user_id, token=session.token())
     return rows[0] if rows else None
 
 
@@ -135,6 +139,7 @@ def _open(session, typed_name):
                  token=session.token(), extra_headers={"Prefer": "return=minimal"})
         row = {"username": name, "progress": {}}
     session.name = row["username"]
+    session.is_admin = bool(row.get("is_admin"))
     return session, row.get("progress") or {}
 
 
