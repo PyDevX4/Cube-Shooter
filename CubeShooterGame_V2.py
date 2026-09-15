@@ -6009,11 +6009,36 @@ selected_mode = "Waves"
 PLAY_CENTER_X = min(WIDTH // 2, WIDTH - 650)  # Leaves room for the lobby panel
 PLAY_BUTTON = pygame.Rect(PLAY_CENTER_X - 160, HUB_VIEWPORT.y + 470, 320, 72)
 
+map_menu_open = False
+MAP_CURRENT_BOX = pygame.Rect(PLAY_CENTER_X - 150, HUB_VIEWPORT.y + 385, 200, 50)   # The map you're on
+MAP_SELECT_BUTTON = pygame.Rect(PLAY_CENTER_X + 62, HUB_VIEWPORT.y + 385, 140, 50)  # Opens the map menu
+
 def map_button_rects():
-    width, gap = 170, 16
-    left = PLAY_CENTER_X - (len(MAP_NAMES) * width + (len(MAP_NAMES) - 1) * gap) // 2
-    return [(name, pygame.Rect(left + i * (width + gap), HUB_VIEWPORT.y + 385, width, 50))
+    """The rows of the drop-down map menu, under the Select button."""
+    top = MAP_CURRENT_BOX.bottom + 6
+    return [(name, pygame.Rect(MAP_CURRENT_BOX.x, top + i * 54, MAP_SELECT_BUTTON.right - MAP_CURRENT_BOX.x, 50))
             for i, name in enumerate(MAP_NAMES)]
+
+def draw_map_row(name, rect, color):
+    draw_button(rect, color)
+    swatch = pygame.transform.smoothscale(MAP_TEXTURES[name], (34, 34))
+    swatch_rect = swatch.get_rect(midleft=(rect.x + 10, rect.centery))
+    screen.blit(swatch, swatch_rect)
+    pygame.draw.rect(screen, (40, 40, 40), swatch_rect, 2, border_radius=4)
+    text = smaller_button_font.render(name, True, BLACK)
+    screen.blit(text, text.get_rect(midleft=(swatch_rect.right + 12, rect.centery)))
+
+def draw_map_menu():
+    """The drop-down list of maps, drawn on top of everything on the Play tab."""
+    rows = map_button_rects()
+    panel = rows[0][1].union(rows[-1][1]).inflate(12, 12)
+    pygame.draw.rect(screen, (24, 27, 34), panel, border_radius=12)
+    pygame.draw.rect(screen, (90, 96, 110), panel, 2, border_radius=12)
+    for name, rect in rows:
+        draw_map_row(name, rect, GREEN if name == selected_map else BLUE)
+        if name == selected_map:
+            tick = smaller_button_font.render("selected", True, (40, 90, 50))
+            screen.blit(tick, tick.get_rect(midright=(rect.right - 14, rect.centery)))
 
 def mode_row_rects():
     return [(name, pygame.Rect(PLAY_CENTER_X - 280, HUB_VIEWPORT.y + 20 + i * 62, 560, 54))
@@ -6033,17 +6058,16 @@ def draw_play_tab():
     info = coin_font.render(description, True, (210, 215, 222))
     screen.blit(info, info.get_rect(center=(PLAY_CENTER_X, HUB_VIEWPORT.y + 350)))
     # Map picker: works for every mode
-    rects = map_button_rects()
     map_label = coin_font.render("Map:", True, WHITE)
-    screen.blit(map_label, map_label.get_rect(midright=(rects[0][1].x - 14, rects[0][1].centery)))
-    for name, rect in rects:
-        draw_button(rect, GREEN if name == selected_map else BLUE)
-        swatch = pygame.transform.smoothscale(MAP_TEXTURES[name], (34, 34))
-        swatch_rect = swatch.get_rect(midleft=(rect.x + 10, rect.centery))
-        screen.blit(swatch, swatch_rect)
-        pygame.draw.rect(screen, (40, 40, 40), swatch_rect, 2, border_radius=4)
-        text = smaller_button_font.render(name, True, BLACK)
-        screen.blit(text, text.get_rect(midleft=(swatch_rect.right + 12, rect.centery)))
+    screen.blit(map_label, map_label.get_rect(midright=(MAP_CURRENT_BOX.x - 14, MAP_CURRENT_BOX.centery)))
+    draw_map_row(selected_map, MAP_CURRENT_BOX, GREEN)
+    draw_button(MAP_SELECT_BUTTON, GREY_BUTTON if multiplayer_guest() else BLUE)
+    select_text = small_button_font.render("Select", True, BLACK)
+    text_rect = select_text.get_rect(center=(MAP_SELECT_BUTTON.centerx - 12, MAP_SELECT_BUTTON.centery))
+    screen.blit(select_text, text_rect)
+    ax, ay = text_rect.right + 16, MAP_SELECT_BUTTON.centery  # Little arrow: down when closed, up when open
+    flip = -1 if map_menu_open else 1
+    pygame.draw.polygon(screen, BLACK, [(ax - 8, ay - 4 * flip), (ax + 8, ay - 4 * flip), (ax, ay + 5 * flip)])
     waiting = multiplayer_guest() or (play_multiplayer and not net.lobby)
     draw_button(PLAY_BUTTON, GREY_BUTTON if waiting else GREEN)
     if multiplayer_guest():
@@ -6054,6 +6078,8 @@ def draw_play_tab():
     draw_lobby_panel()
     if show_waves_panel():
         draw_waves_panel()
+    if map_menu_open:
+        draw_map_menu()
 
 sandbox_entry_coins = 0  # Your real coins when the Sandbox started; the Sandbox can't change them
 sandbox_snapshot = None  # Where every enemy was when the Sandbox last switched into play mode
@@ -6729,15 +6755,20 @@ def start_selected_mode():
         globals()["checkpoint_wave"] = 1
 
 def handle_play_tab_click(pos):
-    global selected_mode, selected_map
+    global selected_mode, selected_map, map_menu_open
+    if map_menu_open:  # The open menu takes the click: pick a map, or click anywhere else to close it
+        map_menu_open = False
+        for name, rect in map_button_rects():
+            if rect.collidepoint(pos) and not multiplayer_guest():
+                selected_map = name
+        return
     if handle_waves_panel_click(pos) or handle_lobby_click(pos):
         return
     if multiplayer_guest():
         return  # The host chooses and starts
-    for name, rect in map_button_rects():
-        if rect.collidepoint(pos):
-            selected_map = name
-            return
+    if MAP_SELECT_BUTTON.collidepoint(pos) or MAP_CURRENT_BOX.collidepoint(pos):
+        map_menu_open = True
+        return
     for name, rect in mode_row_rects():
         if rect.collidepoint(pos):
             if not (play_multiplayer and name in MULTIPLAYER_SOLO_MODES):
