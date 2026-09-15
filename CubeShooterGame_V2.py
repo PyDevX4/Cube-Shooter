@@ -3540,32 +3540,43 @@ def spawn_boss(kind):
         boss_push[:] = [math.cos(a) * 26, math.sin(a) * 26]
         active_boss["grace"] = 1.0  # Can't hurt the player while they slide out
 
-def pink_boss_pick_target(boss):
-    """Where his next dash ends: straight at the nearest player and a little past them (stopped by the barrier).
-    From 150 down he dashes in sets of 3: at the player, somewhere around them, then where they're heading."""
-    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
-    px, py = tx + player_size / 2, ty + player_size / 2
-    if boss["health"] <= 150:
-        step = boss.get("dash_step", 0) % 3
-        boss["dash_step"] = step + 1
-        if step == 1:  # Somewhere in the area around the player
-            a, r = random.uniform(0, 2 * math.pi), random.uniform(PINK_BOSS_NEAR_SCATTER * 0.4, PINK_BOSS_NEAR_SCATTER)
-            px, py = px + math.cos(a) * r, py + math.sin(a) * r
-        elif step == 2:  # Where he thinks the player is going
-            vx, vy = boss.get("player_vel", (0.0, 0.0))
-            px, py = px + vx * PINK_BOSS_LEAD_TIME, py + vy * PINK_BOSS_LEAD_TIME
-    dx, dy = px - boss["x"], py - boss["y"]
+def pink_dash_end(from_x, from_y, aim_x, aim_y):
+    """Where a dash from (from_x, from_y) toward (aim_x, aim_y) ends: a little past the aim point, stopped by the barrier."""
+    dx, dy = aim_x - from_x, aim_y - from_y
     distance = math.hypot(dx, dy) or 1.0
-    boss["angle"] = math.atan2(dy, dx)
     reach = distance + PINK_BOSS_OVERSHOOT
     margin = BOSS_RADIUS + 12
-    for limit, d, pos in ((MAP_WIDTH - margin, dx, boss["x"]), (MAP_HEIGHT - margin, dy, boss["y"])):
+    for limit, d, pos in ((MAP_WIDTH - margin, dx, from_x), (MAP_HEIGHT - margin, dy, from_y)):
         if d > 1e-9:
             reach = min(reach, (limit - pos) / (d / distance))
         elif d < -1e-9:
             reach = min(reach, (margin - pos) / (d / distance))
     reach = max(0.0, reach)
-    boss["target"] = (boss["x"] + dx / distance * reach, boss["y"] + dy / distance * reach)
+    return (from_x + dx / distance * reach, from_y + dy / distance * reach)
+
+def pink_boss_pick_target(boss):
+    """Plan his next dash. Above 150: one dash straight at the nearest player, a little past them.
+    From 150 down: 3 dashes planned (and shown) at once - at the player, somewhere around them, then where
+    they're heading - which he does back to back with no delay."""
+    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+    px, py = tx + player_size / 2, ty + player_size / 2
+    aims = [(px, py)]
+    if boss["health"] <= 150:
+        a, r = random.uniform(0, 2 * math.pi), random.uniform(PINK_BOSS_NEAR_SCATTER * 0.4, PINK_BOSS_NEAR_SCATTER)
+        aims.append((px + math.cos(a) * r, py + math.sin(a) * r))  # Somewhere in the area around the player
+        vx, vy = boss.get("player_vel", (0.0, 0.0))
+        aims.append((px + vx * PINK_BOSS_LEAD_TIME, py + vy * PINK_BOSS_LEAD_TIME))  # Where the player is heading
+    plan, fx, fy = [], boss["x"], boss["y"]
+    for ax, ay in aims:
+        end = pink_dash_end(fx, fy, ax, ay)
+        if math.hypot(end[0] - fx, end[1] - fy) < 40:  # Aim point right where he already is: go on past it instead
+            end = pink_dash_end(fx, fy, fx + (ax - boss["x"]) + 1, fy + (ay - boss["y"]))
+        plan.append(end)
+        fx, fy = end
+    boss["plan"] = plan
+    boss["target"] = plan[0]
+    boss["angle"] = math.atan2(plan[0][1] - boss["y"], plan[0][0] - boss["x"])
+
 
 def pink_dash_step(boss, dt, target, can_hit=True):
     """Move toward target at dash speed. Hits the player anywhere along the way. True once he gets there."""
@@ -3606,7 +3617,14 @@ def update_pink_boss(boss, dt):
             boss["phase"] = "dash"
     elif phase == "dash":
         if pink_dash_step(boss, dt, boss["target"]):
-            boss["phase"], boss["timer"] = "rest", PINK_BOSS_REST_TIME
+            plan = boss.get("plan") or []
+            if plan and plan[0] == boss["target"]:
+                plan.pop(0)
+            if plan:  # Straight into the next planned dash, no delay
+                boss["target"] = plan[0]
+                boss["angle"] = math.atan2(plan[0][1] - boss["y"], plan[0][0] - boss["x"])
+            else:
+                boss["phase"], boss["timer"] = "rest", PINK_BOSS_REST_TIME
     elif phase == "rest":
         if boss["timer"] <= 0:
             pink_boss_pick_target(boss)
@@ -3641,7 +3659,6 @@ def update_pink_boss(boss, dt):
     elif phase == "back":
         if boss["timer"] <= 0:
             spawn_minions_any(PINK_BOSS_RETURN_SPAWNS[boss.get("exit_at", 175)])  # 75 greens (or 35 blues), and he's back to dashing
-            boss["dash_step"] = 0
             pink_boss_pick_target(boss)
             boss["phase"], boss["timer"] = "aim", PINK_BOSS_AIM_TIME
     elif phase == "lines":
@@ -3751,40 +3768,50 @@ def pink_boss_visible(boss):
     return boss["phase"] not in ("gone", "return")
 
 def draw_pink_dash_path(boss, cx, cy):
-    """His warning: a crackling pink lightning bolt that shoots out of him toward where he'll land,
-    and a glowing circle there that shrinks down to his size."""
-    tx, ty = boss["target"]
-    ex, ey = tx - camera_x, ty - camera_y
+    """His warning: a crackling white lightning bolt shooting out of him along each planned dash (1 or 3, one after
+    the other), with a pink circle at each place he'll land, shrinking down to his size."""
+    plan = boss.get("plan") or [boss["target"]]
     charge = 1 - max(0.0, boss["timer"]) / PINK_BOSS_AIM_TIME
     now = pygame.time.get_ticks() / 1000
-    length = math.hypot(ex - cx, ey - cy)
-    if length < 1:
-        return
-    ux, uy = (ex - cx) / length, (ey - cy) / length
-    nx, ny = -uy, ux
-    reach = length * min(1.0, charge * 1.35)  # The bolt races out of him and gets there a little before he goes
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    glow = pygame.Surface((WIDTH, HEIGHT))  # Added on top (brightens toward pink instead of greying the grass)
+    glow = pygame.Surface((WIDTH, HEIGHT))  # Added on top (brightens instead of greying the grass)
     rng = random.Random(int(now * 18))  # Re-drawn a few times a second so it flickers
-    segments = max(2, int(reach // 55))
-    points = [(cx, cy)]
-    for k in range(1, segments):
-        d = reach * k / segments
-        jag = rng.uniform(-28, 28)
-        points.append((cx + ux * d + nx * jag, cy + uy * d + ny * jag))
-    points.append((cx + ux * reach, cy + uy * reach))
-    pygame.draw.lines(glow, (70, 70, 70), False, points, 18)
-    pygame.draw.lines(layer, (235, 240, 255, 235), False, points, 9)
-    pygame.draw.lines(layer, (255, 255, 255, 255), False, points, 3)
-    tip_x, tip_y = points[-1]
-    pygame.draw.circle(layer, (255, 245, 250, 255), (tip_x, tip_y), 7)  # Bright spark at the front of the bolt
-    # Circle where he lands, shrinking down to his size
-    ring = BOSS_RADIUS * (1.8 - 0.8 * charge)
-    pygame.draw.circle(layer, (255, 60, 165, int(90 + 70 * charge)), (ex, ey), BOSS_RADIUS)
-    pygame.draw.circle(layer, (255, 235, 248, 250), (ex, ey), ring, 5)
-    pygame.draw.circle(layer, (255, 150, 215, 220), (ex, ey), BOSS_RADIUS * 0.55, 3)
+    grow = min(1.0, charge * 1.35) * len(plan)  # The bolt races along the whole plan, one leg after another
+    sx, sy = cx, cy
+    for k, (tx, ty) in enumerate(plan):
+        ex, ey = tx - camera_x, ty - camera_y
+        length = math.hypot(ex - sx, ey - sy)
+        leg = max(0.0, min(1.0, grow - k))
+        if length >= 1 and leg > 0:
+            ux, uy = (ex - sx) / length, (ey - sy) / length
+            nx, ny = -uy, ux
+            reach = length * leg
+            segments = max(2, int(reach // 55))
+            points = [(sx, sy)]
+            for j in range(1, segments):
+                d = reach * j / segments
+                jag = rng.uniform(-28, 28)
+                points.append((sx + ux * d + nx * jag, sy + uy * d + ny * jag))
+            points.append((sx + ux * reach, sy + uy * reach))
+            pygame.draw.lines(glow, (70, 70, 70), False, points, 18)
+            pygame.draw.lines(layer, (235, 240, 255, 235), False, points, 9)
+            pygame.draw.lines(layer, (255, 255, 255, 255), False, points, 3)
+            if leg < 1:
+                pygame.draw.circle(layer, (255, 245, 250, 255), points[-1], 7)  # Bright spark at the front of the bolt
+        # Circle where he lands on this leg, shrinking down to his size
+        ring = BOSS_RADIUS * (1.8 - 0.8 * charge)
+        pygame.draw.circle(layer, (255, 60, 165, int(90 + 70 * charge)), (ex, ey), BOSS_RADIUS)
+        pygame.draw.circle(layer, (255, 235, 248, 250), (ex, ey), ring, 5)
+        if len(plan) > 1:  # Numbered, so you can see the order
+            number = coin_font.render(str(k + 1), True, WHITE)
+            layer.blit(number, number.get_rect(center=(ex, ey)))
+        else:
+            pygame.draw.circle(layer, (255, 150, 215, 220), (ex, ey), BOSS_RADIUS * 0.55, 3)
+        sx, sy = ex, ey
     screen.blit(glow, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
     screen.blit(layer, (0, 0))
+
+
 def boss_dash_length(boss):
     """How far the dash can go before the boss would hit the barrier."""
     return max(0.0, min(GREEN_DASH_LENGTH, laser_reach(boss["x"], boss["y"], boss["angle"]) - BOSS_RADIUS))
