@@ -2004,7 +2004,7 @@ def set_boss_health(kind, health):
         elif health == 25:
             teal_boss_start_guard(boss, 25)
     if kind == "pink":
-        boss["events_done"] = [at for at in (175, 150) if at > health]
+        boss["events_done"] = [at for at in (175, 150, 125) if at > health]
         boss["lines"], boss["shielded"] = None, False
         if boss["phase"] not in ("start", "aim", "dash", "rest"):
             boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
@@ -2013,6 +2013,8 @@ def set_boss_health(kind, health):
             pink_boss_start_exit(boss)
         elif health == 150:
             pink_boss_start_lines(boss)
+        elif health == 125:
+            pink_boss_start_exit(boss, 125)
     if kind == "yellow":
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         boss["event"], boss["shielded"], boss["arms"] = None, False, None
@@ -3376,6 +3378,10 @@ PINK_BOSS_REST_TIME = 0.5       # ...and rests this long after each dash
 PINK_BOSS_DASH_SPEED = 9000     # Pixels per second: so fast it's nearly a teleport
 PINK_BOSS_SPAWN_AT_175 = {"pink": 30, "blue": 50, "teal": 25}
 PINK_BOSS_RETURN_SPAWN = {"green": 75}   # When he comes back after the 175 wave
+PINK_BOSS_EXIT_SPAWNS = {175: {"pink": 30, "blue": 50, "teal": 25}, 125: {"purple": 5, "yellow": 40, "red": 20}}
+PINK_BOSS_RETURN_SPAWNS = {175: {"green": 75}, 125: {"blue": 35}}
+PINK_BOSS_NEAR_SCATTER = 260    # 150-100: his second dash goes somewhere this close to the player...
+PINK_BOSS_LEAD_TIME = 0.9       # ...and his third goes where the player will be this many seconds later
 PINK_BOSS_SLIDE_SPEED = 1400    # Sliding back onto the map
 PINK_BOSS_RETURN_WAIT = 1.0
 PINK_LINES_ROUNDS = 20          # At 150: this many rounds of diagonal lines...
@@ -3535,9 +3541,19 @@ def spawn_boss(kind):
         active_boss["grace"] = 1.0  # Can't hurt the player while they slide out
 
 def pink_boss_pick_target(boss):
-    """Where his next dash ends: straight at the nearest player and a little past them (stopped by the barrier)."""
+    """Where his next dash ends: straight at the nearest player and a little past them (stopped by the barrier).
+    From 150 down he dashes in sets of 3: at the player, somewhere around them, then where they're heading."""
     tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
     px, py = tx + player_size / 2, ty + player_size / 2
+    if boss["health"] <= 150:
+        step = boss.get("dash_step", 0) % 3
+        boss["dash_step"] = step + 1
+        if step == 1:  # Somewhere in the area around the player
+            a, r = random.uniform(0, 2 * math.pi), random.uniform(PINK_BOSS_NEAR_SCATTER * 0.4, PINK_BOSS_NEAR_SCATTER)
+            px, py = px + math.cos(a) * r, py + math.sin(a) * r
+        elif step == 2:  # Where he thinks the player is going
+            vx, vy = boss.get("player_vel", (0.0, 0.0))
+            px, py = px + vx * PINK_BOSS_LEAD_TIME, py + vy * PINK_BOSS_LEAD_TIME
     dx, dy = px - boss["x"], py - boss["y"]
     distance = math.hypot(dx, dy) or 1.0
     boss["angle"] = math.atan2(dy, dx)
@@ -3572,6 +3588,14 @@ def pink_dash_step(boss, dt, target, can_hit=True):
 def update_pink_boss(boss, dt):
     """3 s start -> aim (path shown) 1 s -> dash (nearly instant) -> rest 0.5 s -> aim... At 175: dash away and vanish."""
     boss["timer"] -= dt
+    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+    last = boss.get("player_last")
+    if last is not None and dt > 0:
+        vx, vy = (tx - last[0]) / dt, (ty - last[1]) / dt
+        if math.hypot(vx, vy) < 2000:  # Ignore teleports
+            ox, oy = boss.get("player_vel", (0.0, 0.0))
+            boss["player_vel"] = (ox * 0.85 + vx * 0.15, oy * 0.85 + vy * 0.15)
+    boss["player_last"] = (tx, ty)
     phase = boss["phase"]
     if phase == "start":
         if boss["timer"] <= 0:
@@ -3590,7 +3614,7 @@ def update_pink_boss(boss, dt):
     elif phase == "exit":
         if pink_dash_step(boss, dt, boss["target"], can_hit=False):
             boss["phase"] = "gone"  # Off the map: vanished
-            spawn_minions_any(PINK_BOSS_SPAWN_AT_175)
+            spawn_minions_any(PINK_BOSS_EXIT_SPAWNS[boss.get("exit_at", 175)])
     elif phase == "gone":
         if not any_enemies_alive():
             # Everything he called in is dead: he slides back in from the side away from the player
@@ -3616,16 +3640,18 @@ def update_pink_boss(boss, dt):
             boss["y"] += (ty - boss["y"]) / gap * step
     elif phase == "back":
         if boss["timer"] <= 0:
-            spawn_minions_any(PINK_BOSS_RETURN_SPAWN)  # 75 greens, and he's back to dashing
+            spawn_minions_any(PINK_BOSS_RETURN_SPAWNS[boss.get("exit_at", 175)])  # 75 greens (or 35 blues), and he's back to dashing
+            boss["dash_step"] = 0
             pink_boss_pick_target(boss)
             boss["phase"], boss["timer"] = "aim", PINK_BOSS_AIM_TIME
     elif phase == "lines":
         update_pink_lines(boss, dt)
 
-def pink_boss_start_exit(boss):
-    """At 175: he dashes off the map, straight away from the player, and vanishes."""
-    boss["events_done"].append(175)
-    boss["health"] = 175
+def pink_boss_start_exit(boss, at=175):
+    """At 175 and 125: he dashes off the map, straight away from the player, and vanishes."""
+    boss["events_done"].append(at)
+    boss["health"] = at
+    boss["exit_at"] = at
     tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
     dx, dy = boss["x"] - (tx + player_size / 2), boss["y"] - (ty + player_size / 2)
     distance = math.hypot(dx, dy) or 1.0
@@ -4578,6 +4604,8 @@ def hurt_boss(amount=1, force=False):
             pink_boss_start_exit(boss)
         elif boss["health"] <= 150 and 150 not in boss["events_done"] and boss["health"] > 0:
             pink_boss_start_lines(boss)
+        elif boss["health"] <= 125 and 125 not in boss["events_done"] and boss["health"] > 0:
+            pink_boss_start_exit(boss, 125)
         amount = 0
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
