@@ -1886,10 +1886,31 @@ console_anim = 0.0        # 0 = hidden, 1 = fully dropped down
 admin_code_open = False   # The "Enter code" box you get after typing admin
 admin_code_input = ""
 admin_panel_open = False
+admin_unlocked = False    # Commands only work once "admin" + the right code has been entered (until the game closes)
 CONSOLE_BAR = pygame.Rect(WIDTH // 2 - 380, 0, 760, 74)
 ADMIN_GIVE_BUTTON = pygame.Rect(WIDTH // 2 - 170, 420, 340, 60)
 ADMIN_SHOP_BUTTON = pygame.Rect(WIDTH // 2 - 170, 492, 340, 60)
 ADMIN_CLOSE_BUTTON = pygame.Rect(WIDTH // 2 - 170, 564, 340, 60)
+
+def respawn_all_players(announce=False):
+    """respawn command: bring back every dead player - you, and in multiplayer everyone who is spectating."""
+    global game_over, player_x, player_y, console_message, console_message_timer
+    revived = False
+    if globals().get("spectating"):
+        respawn_from_spectating()
+        revived = True
+    elif game_over and not (start_screen or hub_open):
+        game_over = False  # Back in right where you died, with a moment of safety
+        globals()["respawn_grace"] = RESPAWN_GRACE
+        globals()["death_snapshot"] = None
+        spawn_teleport_flash(player_x + player_size / 2, player_y + player_size / 2,
+                             player_x + player_size / 2, player_y + player_size / 2, (140, 220, 255))
+        revived = True
+    if announce and multiplayer_match:
+        net.relay({"k": "respawn"})  # Everyone else who is dead comes back too
+    if announce:
+        console_message = "Respawned everyone" if multiplayer_match else ("Respawned" if revived else "Nobody is dead")
+        console_message_timer = 2.5
 
 def close_console_stack():
     """Close the console bar and any admin screen, and let the game run again."""
@@ -2051,6 +2072,14 @@ def run_console_command(text):
         admin_code_input = ""
         return
     compact = command.replace(" ", "")
+    if not admin_unlocked:
+        console_message, console_message_timer = "Commands need admin: type admin and enter the code", 3.0
+        console_input = ""
+        return
+    if compact == "respawn":
+        respawn_all_players(announce=True)
+        close_console_stack()
+        return
     if compact.startswith("wave") and compact[4:].isdigit() and int(compact[4:]) >= 1:
         jump_to_wave(int(compact[4:]))
         close_console_stack()
@@ -6054,6 +6083,9 @@ def receive_world_message(name, data):
     """Handle a game message from another player (not a position update)."""
     global block_defence_points, block_health
     kind = data.get("k")
+    if kind == "respawn":
+        respawn_all_players()
+        return
     if kind == "w" and net_role() == "guest" and name == net.lobby.get("host"):
         apply_world(data["z"])
     elif kind == MULTIPLAYER_REPAIR_REQUEST and net_role() == "host" and in_block_defence:
@@ -7064,6 +7096,8 @@ was_spectating = False
 while running:
     dt = clock.tick(60) / 1000
     update_multiplayer()
+    if not in_multiplayer_game():
+        respawn_grace = max(0.0, respawn_grace - dt)  # The moment of safety after the respawn command
     if (game_over and not was_game_over) or (spectating and not was_spectating):
         sounds.play("player_death")  # However the player died, the death sound plays once
     was_game_over, was_spectating = game_over, spectating
@@ -7163,6 +7197,7 @@ while running:
                     if admin_code_input == ADMIN_CODE:
                         admin_code_open = False
                         admin_panel_open = True
+                        admin_unlocked = True  # Commands work now
                     else:
                         console_message, console_message_timer = "Wrong code", 2.5
                     admin_code_input = ""
