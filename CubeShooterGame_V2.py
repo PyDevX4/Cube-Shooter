@@ -4994,9 +4994,19 @@ def draw_boss_health():
         left = sum(len(group) for group in (red_enemies, green_enemies, blue_enemies, purple_enemies, orange_enemies,
                                             yellow_enemies, teal_enemies, pink_enemies, violet_enemies))
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - kill the enemies! ({left} left)")
-    elif active_boss["kind"] == "teal" and active_boss.get("phase") == "swarm":
-        rounds_left = TEAL_SWARM_ROUNDS - active_boss["swarm_round"] + (1 if any(e.get("swarm") for e in teal_enemies) else 0)
-        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"Dodge the teals! ({min(TEAL_SWARM_ROUNDS, rounds_left)} left)")
+    elif (active_boss["kind"] == "teal" and active_boss.get("phase") == "swarm"
+          and (active_boss.get("ghost_swarm") or active_boss.get("swarm_at") not in (50, 25))):
+        total = TEAL_GHOST_ROUNDS if active_boss.get("ghost_swarm") else TEAL_SWARM_ROUNDS  # 30 at 100, 25 at 150
+        rounds_left = total - active_boss["swarm_round"] + (1 if any(e.get("swarm") for e in teal_enemies) else 0)
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"Dodge the teals! ({max(0, min(total, rounds_left))} left)")
+    elif active_boss["kind"] == "pink" and active_boss.get("lines"):
+        lines = active_boss["lines"]
+        rounds_left = PINK_LINES_ROUNDS - lines["round"]
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - dodge the pinks! ({max(0, rounds_left)} left)")
+    elif active_boss["kind"] == "pink" and active_boss.get("phase") == "gone":
+        left = sum(len(group) for group in (red_enemies, green_enemies, blue_enemies, purple_enemies, orange_enemies,
+                                            yellow_enemies, teal_enemies, pink_enemies, violet_enemies))
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"He's gone - kill the enemies! ({left} left)")
     elif active_boss["kind"] == "yellow" and active_boss["event"] == "enemies25":
         left = len(blue_enemies) + len(orange_enemies) + len(red_enemies) + len(green_enemies) + len(purple_enemies) + len(yellow_enemies) + len(teal_enemies) + len(pink_enemies) + len(violet_enemies)
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - kill the enemies! ({left} left)")
@@ -5013,7 +5023,7 @@ def draw_boss_health():
         left = len(red_enemies) + len(green_enemies) + len(blue_enemies) + len(purple_enemies)
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - kill all the enemies! ({left} left)")
     elif active_boss.get("shielded"):
-        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - kill the blues!")
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label="SHIELDED - kill the blues!" if active_boss["kind"] == "blue" else "SHIELDED")
     else:
         draw_block_health_bar(bar, fraction, info["bar"], label=f"{max(0, active_boss['health'])} / {active_boss['max_health']}")
 
