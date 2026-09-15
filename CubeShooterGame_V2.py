@@ -2102,7 +2102,7 @@ def set_boss_health(kind, health):
         elif health == 25:
             teal_boss_start_guard(boss, 25)
     if kind == "pink":
-        boss["events_done"] = [at for at in (175, 150, 125) if at > health]
+        boss["events_done"] = [at for at in (175, 150, 125, 100) if at > health]
         boss["lines"], boss["shielded"] = None, False
         if boss["phase"] not in ("start", "aim", "dash", "rest"):
             boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
@@ -2113,6 +2113,8 @@ def set_boss_health(kind, health):
             pink_boss_start_lines(boss)
         elif health == 125:
             pink_boss_start_exit(boss, 125)
+        elif health == 100:
+            pink_boss_start_lines(boss, 100)
     if kind == "yellow":
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         boss["event"], boss["shielded"], boss["arms"] = None, False, None
@@ -3489,6 +3491,11 @@ PINK_LINES_GAP = 0.5 / 1.5      # ...with this long after they've crossed before
 PINK_LINES_SPACING = 156        # Line to line: the safe gap between two runners' paths is 68 px (1.5x smaller than before)
 PINK_RUNNER_SPEED = 3900        # How fast each pink runs its line (1.5x quicker)
 PINK_RUNNER_HIT = 44            # Touch distance for a runner
+PINK_MEMORY_SETS = 3            # At 100: each round flashes this many line sets, one at a time...
+PINK_MEMORY_SHOW = 0.35         # ...each for this long, then the pinks run them in the same order
+PINK_STORM_DASHES = 25          # 100-75: this many random dashes around the map...
+PINK_STORM_SHOW = 0.5           # ...shown for this long...
+PINK_STORM_TIME = 1.0           # ...then all of them done in this long
 # Orange Boss: four laser guns on a turret, in four stages, with a shielded laser-lines event at 75, 50 and 25.
 YELLOW_BOSS_ORB_DISTANCE = BOSS_RADIUS + 70
 YELLOW_BOSS_ORB_RADIUS = 30
@@ -3659,6 +3666,20 @@ def pink_boss_pick_target(boss):
     they're heading - which he does back to back with no delay."""
     tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
     px, py = tx + player_size / 2, ty + player_size / 2
+    if boss["health"] <= 100 and 100 in boss["events_done"]:
+        # 100-75: 25 random dashes all over the map, shown for 0.5 s and all done in 1 s
+        margin = BOSS_RADIUS + 12
+        plan = [(random.uniform(margin, MAP_WIDTH - margin), random.uniform(margin, MAP_HEIGHT - margin)) for _ in range(PINK_STORM_DASHES)]
+        total, fx, fy = 0.0, boss["x"], boss["y"]
+        for x, y in plan:
+            total += math.hypot(x - fx, y - fy)
+            fx, fy = x, y
+        boss["plan"], boss["target"] = plan, plan[0]
+        boss["dash_speed"] = total / PINK_STORM_TIME
+        boss["aim_len"] = PINK_STORM_SHOW
+        boss["angle"] = math.atan2(plan[0][1] - boss["y"], plan[0][0] - boss["x"])
+        return
+    boss["dash_speed"] = None
     aims = [(px, py)]
     if boss["health"] <= 150:
         a, r = random.uniform(0, 2 * math.pi), random.uniform(PINK_BOSS_NEAR_SCATTER * 0.4, PINK_BOSS_NEAR_SCATTER)
@@ -3683,7 +3704,7 @@ def pink_dash_step(boss, dt, target, can_hit=True):
     sx, sy = boss["x"], boss["y"]
     tx, ty = target
     gap = math.hypot(tx - sx, ty - sy)
-    step = PINK_BOSS_DASH_SPEED * dt
+    step = (boss.get("dash_speed") or PINK_BOSS_DASH_SPEED) * dt
     if gap <= step:
         boss["x"], boss["y"] = tx, ty
     else:
@@ -3720,10 +3741,11 @@ def update_pink_boss(boss, dt):
             plan = boss.get("plan") or []
             if plan and plan[0] == boss["target"]:
                 plan.pop(0)
-            if plan:  # A short stop, then the next planned dash
+            if plan:  # A short stop, then the next planned dash (no stop during a dash storm)
                 boss["target"] = plan[0]
                 boss["angle"] = math.atan2(plan[0][1] - boss["y"], plan[0][0] - boss["x"])
-                boss["phase"], boss["timer"] = "between", PINK_BOSS_CHAIN_PAUSE
+                if not boss.get("dash_speed"):
+                    boss["phase"], boss["timer"] = "between", PINK_BOSS_CHAIN_PAUSE
             else:
                 boss["phase"], boss["timer"] = "rest", PINK_BOSS_REST_TIME
     elif phase == "between":
@@ -3773,6 +3795,7 @@ def pink_boss_start_exit(boss, at=175):
     boss["events_done"].append(at)
     boss["health"] = at
     boss["exit_at"] = at
+    boss["dash_speed"] = None
     tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
     dx, dy = boss["x"] - (tx + player_size / 2), boss["y"] - (ty + player_size / 2)
     distance = math.hypot(dx, dy) or 1.0
@@ -3781,15 +3804,31 @@ def pink_boss_start_exit(boss, at=175):
     boss["target"] = (boss["x"] + dx / distance * far, boss["y"] + dy / distance * far)
     boss["phase"] = "exit"
 
-def pink_boss_start_lines(boss):
-    """At 150: every enemy still alive dies (no coins), he shields up and the diagonal pink runs start."""
+def pink_boss_start_lines(boss, at=150):
+    """At 150: every enemy still alive dies (no coins), he shields up and the diagonal pink runs start.
+    At 100 the same, but each round flashes 3 sets of lines one at a time - remember them - then runs them in order."""
     kill_all_enemies_no_coins()
-    boss["events_done"].append(150)
-    boss["health"] = 150
+    boss["events_done"].append(at)
+    boss["health"] = at
     boss["shielded"], boss["ripple"] = True, 0.4
     boss["phase"] = "lines"
     boss["lines"] = {"round": 0, "phase": "warning", "timer": PINK_LINES_WARNING, "runners": [],
                      "dir": random.choice((1, -1)), "offset": random.uniform(0, PINK_LINES_SPACING)}
+    if at == 100:
+        pink_memory_new_round(boss["lines"])
+
+def pink_memory_new_round(lines):
+    """Pick this round's 3 line sets (each its own diagonal and spacing) and start flashing the first."""
+    lines["memory"] = True
+    lines["sets"] = [{"dir": random.choice((1, -1)), "offset": random.uniform(0, PINK_LINES_SPACING)} for _ in range(PINK_MEMORY_SETS)]
+    lines["show"] = 0
+    lines["dir"], lines["offset"] = lines["sets"][0]["dir"], lines["sets"][0]["offset"]
+    lines["phase"], lines["timer"] = "memorize", PINK_MEMORY_SHOW
+
+def pink_launch_runners(lines, line_set):
+    flip = random.random() < 0.5  # Which end the pinks start from
+    lines["runners"] = [{"from": (b if flip else a), "to": (a if flip else b), "d": 0.0, "x": 0.0, "y": 0.0}
+                        for a, b in pink_line_segments(line_set)]
 
 def pink_line_segments(lines):
     """Every line of this round, clipped to the barrier: (start, end) points, crossing the whole map diagonally."""
@@ -3825,6 +3864,31 @@ def update_pink_lines(boss, dt):
         if not game_over and not player_safe() and math.hypot(px - runner["x"], py - runner["y"]) < PINK_RUNNER_HIT:
             player_hit()
     lines["runners"] = [r for r in lines["runners"] if r["d"] < math.hypot(r["to"][0] - r["from"][0], r["to"][1] - r["from"][1])]
+    if lines.get("memory"):
+        if lines["phase"] == "memorize" and lines["timer"] <= 0:
+            lines["show"] += 1
+            if lines["show"] < PINK_MEMORY_SETS:  # Flash the next set
+                lines["dir"], lines["offset"] = lines["sets"][lines["show"]]["dir"], lines["sets"][lines["show"]]["offset"]
+                lines["timer"] = PINK_MEMORY_SHOW
+            else:  # All shown: now they run, in the same order, nothing shown
+                lines["running_set"] = 0
+                pink_launch_runners(lines, lines["sets"][0])
+                lines["phase"] = "running"
+        elif lines["phase"] == "running" and not lines["runners"]:
+            lines["running_set"] += 1
+            if lines["running_set"] < PINK_MEMORY_SETS:
+                pink_launch_runners(lines, lines["sets"][lines["running_set"]])
+            else:
+                lines["phase"], lines["timer"] = "gap", PINK_LINES_GAP
+        elif lines["phase"] == "gap" and lines["timer"] <= 0:
+            lines["round"] += 1
+            if lines["round"] >= PINK_LINES_ROUNDS:
+                boss["lines"] = None
+                boss["shielded"], boss["ripple"] = False, 0.4
+                boss["phase"], boss["timer"] = "rest", 0.5  # 100-75: the dash storms
+                return
+            pink_memory_new_round(lines)
+        return
     if lines["phase"] == "warning" and lines["timer"] <= 0:
         flip = random.random() < 0.5  # Which end each round's pinks start from
         lines["runners"] = [{"from": (b if flip else a), "to": (a if flip else b), "d": 0.0, "x": 0.0, "y": 0.0}
@@ -3849,8 +3913,8 @@ def draw_pink_lines(boss):
     if not lines:
         return
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    if lines["phase"] == "warning":
-        charge = 1 - max(0.0, lines["timer"]) / PINK_LINES_WARNING
+    if lines["phase"] in ("warning", "memorize"):
+        charge = 1.0 if lines["phase"] == "memorize" else 1 - max(0.0, lines["timer"]) / PINK_LINES_WARNING
         pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 70)
         for (sx, sy), (ex, ey) in pink_line_segments(lines):
             a, b = (sx - camera_x, sy - camera_y), (ex - camera_x, ey - camera_y)
@@ -3906,7 +3970,9 @@ def draw_pink_dash_path(boss, cx, cy):
         ring = BOSS_RADIUS * (1.8 - 0.8 * charge)
         pygame.draw.circle(layer, (255, 60, 165, int(90 + 70 * charge)), (ex, ey), BOSS_RADIUS)
         pygame.draw.circle(layer, (255, 235, 248, 250), (ex, ey), ring, 5)
-        if len(plan) > 1:  # Numbered, so you can see the order
+        if len(plan) > PINK_MEMORY_SETS:
+            pass  # A dash storm: too many to number
+        elif len(plan) > 1:  # Numbered, so you can see the order
             number = coin_font.render(str(k + 1), True, WHITE)
             layer.blit(number, number.get_rect(center=(ex, ey)))
         else:
@@ -4737,6 +4803,8 @@ def hurt_boss(amount=1, force=False):
             pink_boss_start_lines(boss)
         elif boss["health"] <= 125 and 125 not in boss["events_done"] and boss["health"] > 0:
             pink_boss_start_exit(boss, 125)
+        elif boss["health"] <= 100 and 100 not in boss["events_done"] and boss["health"] > 0:
+            pink_boss_start_lines(boss, 100)
         amount = 0
     if boss["kind"] == "yellow" and not force:
         if boss["shielded"]:
