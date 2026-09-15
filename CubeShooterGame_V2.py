@@ -184,8 +184,8 @@ skin_colors = {
     "pink": (255, 105, 180),
     "violet": (190, 150, 255),
     "navy": (30, 50, 140),      # Navy blue, rust and aquamarine: colours of the next enemies
-    "rust": (183, 65, 14),
-    "aquamarine": (127, 255, 212),
+    "rust": (150, 45, 20),         # Darker, redder rust
+    "aquamarine": (90, 240, 170),  # Greener aquamarine
     # rainbow handled separately
     # galaxy handled separately
 }
