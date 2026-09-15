@@ -118,7 +118,9 @@ main_game_owned_skins = {
     "teal": False,
     "pink": False,
     "violet": False,
-    "navy": False
+    "navy": False,
+    "rust": False,
+    "aquamarine": False
 }  # Store owned skins from main game mode
 # Store upgrade states from main game mode
 main_game_has_gun_upgrade = False
@@ -162,7 +164,9 @@ owned_skins = {
     "teal": False,
     "pink": False,
     "violet": False,
-    "navy": False
+    "navy": False,
+    "rust": False,
+    "aquamarine": False
 }
 
 skin_colors = {
@@ -179,14 +183,16 @@ skin_colors = {
     "teal": (40, 215, 200),     # Same colours as the enemies
     "pink": (255, 105, 180),
     "violet": (190, 150, 255),
-    "navy": (30, 50, 140),      # Navy blue (the next enemy)
+    "navy": (30, 50, 140),      # Navy blue, rust and aquamarine: colours of the next enemies
+    "rust": (183, 65, 14),
+    "aquamarine": (127, 255, 212),
     # rainbow handled separately
     # galaxy handled separately
 }
 
 # List of skins in shop order
 shop_skins = ["white", "black", "red", "galaxy", "orange", "yellow", "green", "blue", "purple", "lava", "water", "rainbow",
-              "teal", "pink", "violet", "navy"]
+              "teal", "pink", "violet", "navy", "rust", "aquamarine"]
 
 current_skin = "white"
 
