@@ -3497,7 +3497,7 @@ PINK_LINES_GAP = 0.5 / 1.5      # ...with this long after they've crossed before
 PINK_LINES_SPACING = 156        # Line to line: the safe gap between two runners' paths is 68 px (1.5x smaller than before)
 PINK_RUNNER_SPEED = 3900        # How fast each pink runs its line (1.5x quicker)
 PINK_RUNNER_HIT = 44            # Touch distance for a runner
-PINK_MEMORY_SETS = 2            # At 100: each round flashes this many line sets, one at a time...
+PINK_MEMORY_SETS = 2            # At 100: each round has 2 line sets: the 2nd warning shows as the 1st set runs...
 PINK_MEMORY_SHOW = 0.5          # ...each for this long, then the pinks run them in the same order
 PINK_ZIGZAG_LENGTH = 260        # 100-50: he moves like a pink enemy - diagonal dashes this long...
 PINK_ZIGZAG_SPEED = 700         # ...at this speed (slower than a pink's 1100)...
@@ -3870,20 +3870,21 @@ def update_pink_lines(boss, dt):
     lines["runners"] = [r for r in lines["runners"] if r["d"] < math.hypot(r["to"][0] - r["from"][0], r["to"][1] - r["from"][1])]
     if lines.get("memory"):
         if lines["phase"] == "memorize" and lines["timer"] <= 0:
-            lines["show"] += 1
-            if lines["show"] < PINK_MEMORY_SETS:  # Flash the next set
-                lines["dir"], lines["offset"] = lines["sets"][lines["show"]]["dir"], lines["sets"][lines["show"]]["offset"]
-                lines["timer"] = PINK_MEMORY_SHOW
-            else:  # All shown: now they run, in the same order, nothing shown
-                lines["running_set"] = 0
-                pink_launch_runners(lines, lines["sets"][0])
-                lines["phase"] = "running"
+            # The 1st set's pinks run, and at the same moment the 2nd set's warning shows
+            lines["running_set"] = 0
+            pink_launch_runners(lines, lines["sets"][0])
+            lines["show"] = 1
+            lines["dir"], lines["offset"] = lines["sets"][1]["dir"], lines["sets"][1]["offset"]
+            lines["phase"], lines["timer"] = "second", PINK_MEMORY_SHOW
+        elif lines["phase"] == "second" and lines["timer"] <= 0:
+            # 0.5 s later the 2nd set's pinks run too
+            first = lines["runners"]
+            pink_launch_runners(lines, lines["sets"][1])
+            lines["runners"] = first + lines["runners"]
+            lines["running_set"] = 1
+            lines["phase"] = "running"
         elif lines["phase"] == "running" and not lines["runners"]:
-            lines["running_set"] += 1
-            if lines["running_set"] < PINK_MEMORY_SETS:
-                pink_launch_runners(lines, lines["sets"][lines["running_set"]])
-            else:
-                lines["phase"], lines["timer"] = "gap", PINK_LINES_GAP
+            lines["phase"], lines["timer"] = "gap", PINK_LINES_GAP
         elif lines["phase"] == "gap" and lines["timer"] <= 0:
             lines["round"] += 1
             if lines["round"] >= PINK_LINES_ROUNDS:
@@ -3916,8 +3917,8 @@ def draw_pink_lines(boss):
     if not lines:
         return
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    if lines["phase"] in ("warning", "memorize"):
-        charge = 1.0 if lines["phase"] == "memorize" else 1 - max(0.0, lines["timer"]) / lines.get("warning", PINK_LINES_WARNING)
+    if lines["phase"] in ("warning", "memorize", "second"):
+        charge = 1.0 if lines["phase"] in ("memorize", "second") else 1 - max(0.0, lines["timer"]) / lines.get("warning", PINK_LINES_WARNING)
         pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 70)
         for (sx, sy), (ex, ey) in pink_line_segments(lines):
             a, b = (sx - camera_x, sy - camera_y), (ex - camera_x, ey - camera_y)
