@@ -3382,6 +3382,8 @@ PINK_BOSS_EXIT_SPAWNS = {175: {"pink": 30, "blue": 50, "teal": 25}, 125: {"purpl
 PINK_BOSS_RETURN_SPAWNS = {175: {"green": 75}, 125: {"blue": 35}}
 PINK_BOSS_NEAR_SCATTER = 260    # 150-100: his second dash goes somewhere this close to the player...
 PINK_BOSS_LEAD_TIME = 0.9       # ...and his third goes where the player will be this many seconds later
+PINK_BOSS_CHAIN_AIM = 1.0       # 150-100: warning before a set of 3 dashes...
+PINK_BOSS_CHAIN_PAUSE = 0.25    # ...and a short stop between each dash of the set
 PINK_BOSS_SLIDE_SPEED = 1400    # Sliding back onto the map
 PINK_BOSS_RETURN_WAIT = 1.0
 PINK_LINES_ROUNDS = 20          # At 150: this many rounds of diagonal lines...
@@ -3574,6 +3576,7 @@ def pink_boss_pick_target(boss):
         plan.append(end)
         fx, fy = end
     boss["plan"] = plan
+    boss["aim_len"] = PINK_BOSS_CHAIN_AIM if len(plan) > 1 else PINK_BOSS_AIM_TIME
     boss["target"] = plan[0]
     boss["angle"] = math.atan2(plan[0][1] - boss["y"], plan[0][0] - boss["x"])
 
@@ -3611,7 +3614,7 @@ def update_pink_boss(boss, dt):
     if phase == "start":
         if boss["timer"] <= 0:
             pink_boss_pick_target(boss)
-            boss["phase"], boss["timer"] = "aim", PINK_BOSS_AIM_TIME
+            boss["phase"], boss["timer"] = "aim", boss["aim_len"]
     elif phase == "aim":
         if boss["timer"] <= 0:
             boss["phase"] = "dash"
@@ -3620,15 +3623,19 @@ def update_pink_boss(boss, dt):
             plan = boss.get("plan") or []
             if plan and plan[0] == boss["target"]:
                 plan.pop(0)
-            if plan:  # Straight into the next planned dash, no delay
+            if plan:  # A short stop, then the next planned dash
                 boss["target"] = plan[0]
                 boss["angle"] = math.atan2(plan[0][1] - boss["y"], plan[0][0] - boss["x"])
+                boss["phase"], boss["timer"] = "between", PINK_BOSS_CHAIN_PAUSE
             else:
                 boss["phase"], boss["timer"] = "rest", PINK_BOSS_REST_TIME
+    elif phase == "between":
+        if boss["timer"] <= 0:
+            boss["phase"] = "dash"
     elif phase == "rest":
         if boss["timer"] <= 0:
             pink_boss_pick_target(boss)
-            boss["phase"], boss["timer"] = "aim", PINK_BOSS_AIM_TIME
+            boss["phase"], boss["timer"] = "aim", boss["aim_len"]
     elif phase == "exit":
         if pink_dash_step(boss, dt, boss["target"], can_hit=False):
             boss["phase"] = "gone"  # Off the map: vanished
@@ -3660,7 +3667,7 @@ def update_pink_boss(boss, dt):
         if boss["timer"] <= 0:
             spawn_minions_any(PINK_BOSS_RETURN_SPAWNS[boss.get("exit_at", 175)])  # 75 greens (or 35 blues), and he's back to dashing
             pink_boss_pick_target(boss)
-            boss["phase"], boss["timer"] = "aim", PINK_BOSS_AIM_TIME
+            boss["phase"], boss["timer"] = "aim", boss["aim_len"]
     elif phase == "lines":
         update_pink_lines(boss, dt)
 
@@ -3771,7 +3778,7 @@ def draw_pink_dash_path(boss, cx, cy):
     """His warning: a crackling white lightning bolt shooting out of him along each planned dash (1 or 3, one after
     the other), with a pink circle at each place he'll land, shrinking down to his size."""
     plan = boss.get("plan") or [boss["target"]]
-    charge = 1 - max(0.0, boss["timer"]) / PINK_BOSS_AIM_TIME
+    charge = 1.0 if boss["phase"] == "between" else 1 - max(0.0, boss["timer"]) / boss.get("aim_len", PINK_BOSS_AIM_TIME)
     now = pygame.time.get_ticks() / 1000
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     glow = pygame.Surface((WIDTH, HEIGHT))  # Added on top (brightens instead of greying the grass)
@@ -4751,10 +4758,11 @@ def draw_boss():
         draw_pink_lines(boss)
         if boss["phase"] == "gone":
             return
-        if boss["phase"] == "aim" and boss.get("target"):
+        if boss["phase"] in ("aim", "between") and boss.get("target"):
             draw_pink_dash_path(boss, cx, cy)
-            cx += random.uniform(-2, 2) * (1 - boss["timer"] / PINK_BOSS_AIM_TIME)
-            cy += random.uniform(-2, 2) * (1 - boss["timer"] / PINK_BOSS_AIM_TIME)
+            if boss["phase"] == "aim":
+                cx += random.uniform(-2, 2) * (1 - boss["timer"] / boss.get("aim_len", PINK_BOSS_AIM_TIME))
+                cy += random.uniform(-2, 2) * (1 - boss["timer"] / boss.get("aim_len", PINK_BOSS_AIM_TIME))
     if boss["kind"] == "green" and boss["state"] == "aim":
         draw_green_dash_path(boss, cx, cy)
         cx += random.uniform(-3, 3) * (1 - boss["timer"] / GREEN_AIM_TIME)  # Shakes as it winds up
