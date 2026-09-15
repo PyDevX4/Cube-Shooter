@@ -2117,6 +2117,9 @@ def draw_minimap():
     play_rect = pygame.Rect(left * scale, top * scale, width * scale, height * scale)
     pygame.draw.rect(surf, MINIMAP_GROUND.get(selected_map, MINIMAP_GROUND["Grass"]), play_rect)
     pygame.draw.rect(surf, (255, 70, 70, 230), play_rect, 2)
+    if in_pvp:
+        for wall in PVP_WALLS:
+            pygame.draw.rect(surf, (160, 170, 185), (wall.x * scale, wall.y * scale, max(2, wall.width * scale), max(2, wall.height * scale)))
     if in_block_defence:
         block = BLOCK_DEFENCE_BLOCK_RECT
         pygame.draw.rect(surf, (150, 150, 150), (block.x * scale, block.y * scale,
@@ -2535,6 +2538,9 @@ def exit_to_main_menu():
     global game_over, game_paused, pause_countdown
     g = globals()
     g["enemy_menu_open"] = False  # Leaving the Sandbox closes its menu
+    if g.get("in_pvp"):
+        g["in_pvp"] = False
+        select_ability_slot(selected_ability_slot)  # Abilities back on
     g["sandbox_place"] = None
     g["block_menu_open"] = False
     start_screen = True
@@ -6165,7 +6171,9 @@ GAME_MODES = [
     ("Block Defence", "Stop the red enemies reaching your block"),
     ("Sandbox", "Add enemies and try everything out"),
     ("Tutorial", "Learn the controls step by step"),
+    ("PVP", "Last player alive wins - multiplayer only"),
 ]
+MULTIPLAYER_ONLY_MODES = ("PVP",)
 selected_mode = "Waves"
 PLAY_CENTER_X = min(WIDTH // 2, WIDTH - 650)  # Leaves room for the lobby panel
 PLAY_BUTTON = pygame.Rect(PLAY_CENTER_X - 160, HUB_VIEWPORT.y + 470, 320, 72)
@@ -6251,18 +6259,20 @@ def handle_map_menu_click(pos):
         return
 
 def mode_row_rects():
-    return [(name, pygame.Rect(PLAY_CENTER_X - 280, HUB_VIEWPORT.y + 20 + i * 62, 560, 54))
+    return [(name, pygame.Rect(PLAY_CENTER_X - 280, HUB_VIEWPORT.y + 14 + i * 54, 560, 48))
             for i, (name, _) in enumerate(GAME_MODES)]
 
 def draw_play_tab():
     for (name, rect), (_, description) in zip(mode_row_rects(), GAME_MODES):
         chosen = name == selected_mode
         solo_only = play_multiplayer and name in MULTIPLAYER_SOLO_MODES
-        draw_button(rect, GREY_BUTTON if solo_only else GREEN if chosen else BLUE)
+        multi_only = not play_multiplayer and name in MULTIPLAYER_ONLY_MODES
+        draw_button(rect, GREY_BUTTON if (solo_only or multi_only) else GREEN if chosen else BLUE)
         label = button_font.render(name, True, BLACK)
         screen.blit(label, label.get_rect(midleft=(rect.x + 22, rect.centery)))
-        if chosen or solo_only:
-            tick = smaller_button_font.render("solo only" if solo_only else "selected", True, (40, 90, 50) if chosen else (40, 40, 40))
+        if chosen or solo_only or multi_only:
+            tick = smaller_button_font.render("solo only" if solo_only else "multiplayer only" if multi_only else "selected",
+                                              True, (40, 90, 50) if chosen else (40, 40, 40))
             screen.blit(tick, tick.get_rect(midright=(rect.right - 18, rect.centery)))
     description = next(text for name, text in GAME_MODES if name == selected_mode)
     info = coin_font.render(description, True, (210, 215, 222))
@@ -6283,6 +6293,8 @@ def draw_play_tab():
     draw_lobby_panel()
     if show_waves_panel():
         draw_waves_panel()
+    if show_pvp_panel():
+        draw_pvp_panel()
     if map_menu_open:
         draw_map_menu()
 
@@ -6446,7 +6458,7 @@ def update_spectating(dt):
     if everyone_dead():
         if all_dead_since is None:
             all_dead_since = time.monotonic()
-        elif net_role() == "host" and time.monotonic() - all_dead_since >= ALL_DEAD_WAIT:
+        elif net_role() == "host" and time.monotonic() - all_dead_since >= ALL_DEAD_WAIT and not in_pvp:
             all_dead_since = None
             net.end_match()  # Everyone's down: game over, back to the lobby
     else:
@@ -6456,11 +6468,11 @@ def draw_spectator_hud():
     if not spectating:
         return
     waves_mode = not (in_storm_survival or in_block_defence)
-    if everyone_dead():
+    if everyone_dead() and not in_pvp:
         title = "Everyone is down!"
         hint = "Game over - back to the lobby in a moment"
     else:
-        title = "You died - back in next wave" if waves_mode else "You died - spectating"
+        title = "You died - back next round" if in_pvp else "You died - back in next wave" if waves_mode else "You died - spectating"
         watching = "Free cam (WASD to move)" if free_cam else f"Watching {spectate_target}"
         hint = f"{watching}     Click / Space: next player     F: free cam"
     banner = get_bubble_text(title, 46, (255, 200, 190), (230, 70, 60), outline=6)
@@ -6654,6 +6666,10 @@ def receive_world_message(name, data):
     if kind == "respawn":
         respawn_all_players()
         return
+    if kind == "pvp" and name == net.lobby.get("host") and net_role() == "guest":
+        apply_pvp_settings(data["s"])
+        pvp_apply_state(data)
+        return
     if kind == "w" and net_role() == "guest" and name == net.lobby.get("host"):
         apply_world(data["z"])
     elif kind == MULTIPLAYER_REPAIR_REQUEST and net_role() == "host" and in_block_defence:
@@ -6663,6 +6679,425 @@ def receive_world_message(name, data):
             if block_defence_points >= cost and block_health < BLOCK_MAX_HEALTH:  # Points are shared
                 block_defence_points -= cost
                 block_health = min(BLOCK_MAX_HEALTH, block_health + health)
+
+# ---- PVP: last player alive wins the round ----
+PVP_ROUND_WIN_COINS = 5
+PVP_GAME_WIN_COINS = 15
+PVP_ROUND_END_WAIT = 3.0       # "(name) Won" shows this long, then everyone respawns
+PVP_GAME_END_WAIT = 5.0        # The final winner shows this long, then back to the lobby
+PVP_ROUND_START_GRACE = 1.5    # Nobody can win a round in its first moment (the others' updates are still arriving)
+PVP_SEND_EVERY = 0.25
+pvp_minutes = 5                # Settings (the host's are used)
+pvp_first_to_on = False
+pvp_first_to_text = "3"
+pvp_first_to_focused = False
+pvp_settings_timer = 0.0
+pvp_send_timer = 0.0
+pvp_state = {"round": 1, "phase": "fight", "time_left": 300.0, "wins": {}, "winner": None, "timer": 0.0, "fight_time": 0.0}
+pvp_banner = None              # {"text", "timer"}
+
+def pvp_first_to():
+    """The First to # number, or None when that setting is off."""
+    if not pvp_first_to_on or not pvp_first_to_text.isdigit() or int(pvp_first_to_text) < 1:
+        return None
+    return int(pvp_first_to_text)
+
+def _build_pvp_arena():
+    """Walls, crate stacks and pillars scattered over the map. The same layout on every computer (fixed seed),
+    with the 4 spawn corners and the middle kept open."""
+    rng = random.Random(4077)
+    spawns = [(420, 420), (MAP_WIDTH - 420, MAP_HEIGHT - 420), (MAP_WIDTH - 420, 420), (420, MAP_HEIGHT - 420)]
+    walls, crates, pillars = [], [], []
+    cx, cy = MAP_WIDTH // 2, MAP_HEIGHT // 2
+    # The centre: four L-shaped corners around an open middle
+    for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+        x, y = cx + sx * 260, cy + sy * 260
+        walls.append(pygame.Rect(min(x, x - sx * 200), y - 20, 200, 40))
+        walls.append(pygame.Rect(x - 20, min(y, y - sy * 200), 40, 200))
+    def clear(rect):
+        grown = rect.inflate(160, 160)
+        if any(grown.collidepoint(px, py) or math.hypot(grown.centerx - px, grown.centery - py) < 260 for px, py in spawns):
+            return False
+        if grown.clipline((cx, cy - 120), (cx, cy + 120)) or grown.collidepoint(cx, cy):
+            return False
+        pieces = walls + crates + pillars
+        return not any(grown.colliderect(other) for other in pieces) and pygame.Rect(80, 80, MAP_WIDTH - 160, MAP_HEIGHT - 160).contains(rect)
+    tries = 0
+    while len(walls) < 34 and tries < 3000:
+        tries += 1
+        length = rng.randint(180, 420)
+        rect = (pygame.Rect(rng.randint(0, MAP_WIDTH), rng.randint(0, MAP_HEIGHT), length, 40) if rng.random() < 0.5
+                else pygame.Rect(rng.randint(0, MAP_WIDTH), rng.randint(0, MAP_HEIGHT), 40, length))
+        if clear(rect):
+            walls.append(rect)
+    tries = 0
+    while len(crates) < 18 and tries < 3000:
+        tries += 1
+        rect = pygame.Rect(rng.randint(0, MAP_WIDTH), rng.randint(0, MAP_HEIGHT), 64, 64)
+        if clear(rect):
+            crates.append(rect)
+            if rng.random() < 0.6:  # Stacks of 2-3
+                crates.append(rect.move(66, 0))
+                if rng.random() < 0.5:
+                    crates.append(rect.move(33, 66))
+    tries = 0
+    while len(pillars) < 12 and tries < 3000:
+        tries += 1
+        rect = pygame.Rect(rng.randint(0, MAP_WIDTH), rng.randint(0, MAP_HEIGHT), 84, 84)
+        if clear(rect):
+            pillars.append(rect)
+    return walls, crates, pillars, spawns
+
+PVP_WALL_PIECES, PVP_CRATES, PVP_PILLARS, PVP_SPAWNS = _build_pvp_arena()
+PVP_WALLS = PVP_WALL_PIECES + PVP_CRATES + PVP_PILLARS   # Everything solid
+
+def pvp_point_in_wall(x, y):
+    return any(wall.collidepoint(x, y) for wall in PVP_WALLS)
+
+def pvp_slide_past_walls(old_x, old_y, new_x, new_y):
+    """Move sideways and up/down separately, so you slide along a wall instead of sticking to it."""
+    x, y = new_x, old_y
+    if pygame.Rect(x, y, player_size, player_size).collidelist(PVP_WALLS) != -1:
+        x = old_x
+    y = new_y
+    if pygame.Rect(x, y, player_size, player_size).collidelist(PVP_WALLS) != -1:
+        y = old_y
+    return x, y
+
+def pvp_bullet_hits_player(bullet):
+    """Another player's shot hitting you kills you. Your own shots vanish when they reach someone (their game decides)."""
+    rect = pygame.Rect(bullet["x"], bullet["y"], bullet_size, bullet_size)
+    if bullet.get("owner"):
+        if not game_over and not player_safe() and pvp_state["phase"] == "fight" and \
+                rect.colliderect(pygame.Rect(player_x, player_y, player_size, player_size)):
+            player_hit()
+            sounds.play("player_death")
+            return True
+        return False
+    return any(not p.get("dead") and rect.colliderect(pygame.Rect(p["x"], p["y"], player_size, player_size))
+               for p in remote_players.values())
+
+def pvp_spawn_point(name):
+    players = sorted(net.lobby["players"]) if net.lobby else [name]
+    index = players.index(name) if name in players else 0
+    return PVP_SPAWNS[index % len(PVP_SPAWNS)]
+
+def pvp_respawn_me():
+    """A new round: back in at your corner."""
+    global player_x, player_y, spectating, free_cam, spectate_target, game_over
+    spectating = free_cam = False
+    spectate_target = None
+    game_over = False
+    sx, sy = pvp_spawn_point(net.name)
+    player_x, player_y = sx - player_size // 2, sy - player_size // 2
+    globals()["respawn_grace"] = RESPAWN_GRACE
+    bullets.clear()
+    spawn_teleport_flash(sx, sy, sx, sy, (140, 220, 255))
+
+def pvp_start_game():
+    """Starting a PVP match (everyone): fresh scores, the no-upgrades rule, everyone at their corner."""
+    global in_pvp, pvp_state, pvp_banner
+    in_pvp = True
+    pvp_banner = None
+    globals()["wave"] = 0
+    kill_all_enemies_no_coins()  # No enemies in PVP: just the players
+    effects.clear()
+    coins.clear()
+    bullets.clear()
+    pvp_state = {"round": 1, "phase": "fight", "time_left": pvp_minutes * 60.0, "wins": {}, "winner": None,
+                 "timer": 0.0, "fight_time": 0.0}
+    select_ability_slot(selected_ability_slot)  # No abilities if the host turned upgrades off
+    pvp_respawn_me()
+
+def pvp_alive_players():
+    names = list(net.lobby["players"]) if net.lobby else []
+    alive = []
+    for name in names:
+        if name == net.name:
+            if not (game_over or spectating):
+                alive.append(name)
+        elif name in remote_players and not remote_players[name].get("dead"):
+            alive.append(name)
+    return names, alive
+
+def update_pvp(dt):
+    """The host runs the rounds and the clock; everyone else follows the host's updates."""
+    global pvp_send_timer, pvp_banner
+    if pvp_banner:
+        pvp_banner["timer"] -= dt
+        if pvp_banner["timer"] <= 0:
+            pvp_banner = None
+    if net_role() != "host":
+        return
+    state = dict(pvp_state)
+    state["wins"] = dict(pvp_state["wins"])
+    if state["phase"] != "game_over":
+        state["time_left"] = max(0.0, state["time_left"] - dt)
+    if state["phase"] == "fight":
+        state["fight_time"] += dt
+        names, alive = pvp_alive_players()
+        if state["time_left"] <= 0:  # Out of time: whoever won the most rounds takes it
+            state.update(phase="game_over", winner=pvp_leader(state["wins"]), timer=PVP_GAME_END_WAIT)
+        elif len(names) >= 2 and state["fight_time"] >= PVP_ROUND_START_GRACE and len(alive) <= 1:
+            winner = alive[0] if alive else None
+            if winner:
+                state["wins"][winner] = state["wins"].get(winner, 0) + 1
+            target = pvp_first_to()
+            if winner and target and state["wins"][winner] >= target:
+                state.update(phase="game_over", winner=winner, timer=PVP_GAME_END_WAIT)
+            else:
+                state.update(phase="round_over", winner=winner, timer=PVP_ROUND_END_WAIT)
+    else:
+        state["timer"] -= dt
+        if state["timer"] <= 0:
+            if state["phase"] == "game_over":
+                net.end_match()  # Back to the lobby
+                state["timer"] = 99.0
+            elif state["time_left"] <= 0:
+                state.update(phase="game_over", winner=pvp_leader(state["wins"]), timer=PVP_GAME_END_WAIT)
+            else:
+                state.update(phase="fight", round=state["round"] + 1, winner=None, fight_time=0.0)
+    changed = (state["phase"], state["round"]) != (pvp_state["phase"], pvp_state["round"])
+    pvp_apply_state(state)
+    pvp_send_timer -= dt
+    if changed or pvp_send_timer <= 0:
+        pvp_send_timer = PVP_SEND_EVERY
+        net.relay({"k": "pvp", "s": pvp_settings_message(), "round": state["round"], "phase": state["phase"],
+                   "time_left": round(state["time_left"], 2), "wins": state["wins"], "winner": state["winner"],
+                   "timer": round(state["timer"], 2)})
+
+def pvp_leader(wins):
+    """Whoever won the most rounds, or None on a tie."""
+    if not wins:
+        return None
+    best = max(wins.values())
+    leaders = [name for name, count in wins.items() if count == best]
+    return leaders[0] if len(leaders) == 1 else None
+
+def pvp_apply_state(state):
+    """A new PVP state (from the host, or the host's own): show winners, pay coins, and respawn on a new round."""
+    global pvp_state, pvp_banner, coin_count, main_game_coins
+    old = pvp_state
+    phase, round_number = state.get("phase", "fight"), int(state.get("round", 1))
+    if phase != old["phase"] and phase in ("round_over", "game_over"):
+        winner = state.get("winner")
+        if phase == "game_over":
+            text = f"{winner} Won the game!" if winner else "It's a draw!"
+            reward = PVP_GAME_WIN_COINS + (PVP_ROUND_WIN_COINS if old["phase"] == "fight" else 0)
+        else:
+            text = f"{winner} Won" if winner else "Nobody won the round"
+            reward = PVP_ROUND_WIN_COINS
+        pvp_banner = {"text": text, "timer": PVP_GAME_END_WAIT if phase == "game_over" else PVP_ROUND_END_WAIT}
+        if winner and winner == net.name:
+            coin_count += reward
+            main_game_coins = coin_count
+            globals().update(console_message=f"+{reward} coins", console_message_timer=2.5)
+        sounds.play("boss_wave_complete" if phase == "game_over" else "wave_complete")
+    if round_number != old["round"] and phase == "fight":
+        pvp_respawn_me()
+    pvp_state = {"round": round_number, "phase": phase, "time_left": float(state.get("time_left", 0)),
+                 "wins": {str(k): int(v) for k, v in dict(state.get("wins", {})).items()}, "winner": state.get("winner"),
+                 "timer": float(state.get("timer", 0)), "fight_time": float(state.get("fight_time", old.get("fight_time", 0)))}
+
+def draw_pvp_hud():
+    """Round wins for everyone on the left, and the winner banner."""
+    names = list(net.lobby["players"]) if net.lobby else [net.name]
+    target = pvp_first_to()
+    title = coin_font.render(f"Round {pvp_state['round']}" + (f"  -  First to {target}" if target else ""), True, WHITE)
+    blit_hud(title, (20, 20))
+    for i, name in enumerate(names):
+        wins = pvp_state["wins"].get(name, 0)
+        dead = (game_over or spectating) if name == net.name else remote_players.get(name, {}).get("dead", False)
+        text = small_button_font.render(f"{name}: {wins}", True, (130, 135, 145) if dead else (255, 222, 95) if name == net.name else WHITE)
+        blit_hud(text, (24, 58 + i * 28))
+    if pvp_banner:
+        banner = get_bubble_text(pvp_banner["text"], 84, (255, 240, 150), (255, 150, 30))
+        if banner.get_width() > WIDTH - 40:
+            banner = pygame.transform.smoothscale_by(banner, (WIDTH - 40) / banner.get_width())
+        screen.blit(banner, banner.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 150)))
+
+PVP_WALL_TILE = None
+
+def draw_pvp_arena():
+    """Neon-edged metal walls, crate stacks, glowing pillars and spawn pads."""
+    global PVP_WALL_TILE
+    if PVP_WALL_TILE is None:
+        PVP_WALL_TILE = pygame.transform.smoothscale(metal_background, (256, 192))
+    view = pygame.Rect(camera_x - 100, camera_y - 100, WIDTH + 200, HEIGHT + 200)
+    pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 400)
+    for sx, sy in PVP_SPAWNS:  # Spawn pads
+        if view.collidepoint(sx, sy):
+            pad = pygame.Surface((180, 180), pygame.SRCALPHA)
+            pygame.draw.circle(pad, (80, 200, 255, 50), (90, 90), 86)
+            pygame.draw.circle(pad, (120, 220, 255, int(120 + 100 * pulse)), (90, 90), 86, 4)
+            pygame.draw.circle(pad, (120, 220, 255, 90), (90, 90), 56, 2)
+            screen.blit(pad, (sx - 90 - camera_x, sy - 90 - camera_y))
+    for wall in PVP_WALL_PIECES:
+        if not view.colliderect(wall):
+            continue
+        r = wall.move(-camera_x, -camera_y)
+        shadow = pygame.Surface((r.width + 16, r.height + 16), pygame.SRCALPHA)
+        pygame.draw.rect(shadow, (0, 0, 0, 90), (8, 12, r.width, r.height), border_radius=6)
+        screen.blit(shadow, (r.x - 8, r.y - 4))
+        for tx in range(r.x, r.right, 256):
+            for ty in range(r.y, r.bottom, 192):
+                screen.blit(PVP_WALL_TILE, (tx, ty), (0, 0, min(256, r.right - tx), min(192, r.bottom - ty)))
+        # Hazard stripes down the middle, and a glowing neon edge
+        stripe = pygame.Surface(r.size, pygame.SRCALPHA)
+        long_side = max(r.width, r.height)
+        for k in range(-40, long_side + 40, 28):
+            if r.width >= r.height:
+                pygame.draw.polygon(stripe, (255, 200, 40, 70), [(k, 14), (k + 14, 14), (k + 4, r.height - 14), (k - 10, r.height - 14)])
+            else:
+                pygame.draw.polygon(stripe, (255, 200, 40, 70), [(14, k), (14, k + 14), (r.width - 14, k + 4), (r.width - 14, k - 10)])
+        screen.blit(stripe, r.topleft)
+        glow = pygame.Surface((r.width + 20, r.height + 20), pygame.SRCALPHA)
+        pygame.draw.rect(glow, (60, 200, 255, int(60 + 50 * pulse)), glow.get_rect(), 8, border_radius=10)
+        screen.blit(glow, (r.x - 10, r.y - 10))
+        pygame.draw.rect(screen, (140, 235, 255), r, 2, border_radius=4)
+    for crate in PVP_CRATES:
+        if not view.colliderect(crate):
+            continue
+        r = crate.move(-camera_x, -camera_y)
+        pygame.draw.rect(screen, (0, 0, 0), r.move(4, 6), border_radius=4)
+        pygame.draw.rect(screen, (70, 76, 86), r, border_radius=4)
+        inner = r.inflate(-12, -12)
+        pygame.draw.rect(screen, (95, 102, 114), inner)
+        pygame.draw.line(screen, (55, 60, 70), inner.topleft, inner.bottomright, 4)
+        pygame.draw.line(screen, (55, 60, 70), inner.topright, inner.bottomleft, 4)
+        pygame.draw.rect(screen, (255, 160, 40), r, 3, border_radius=4)
+    for pillar in PVP_PILLARS:
+        if not view.colliderect(pillar):
+            continue
+        r = pillar.move(-camera_x, -camera_y)
+        pygame.draw.rect(screen, (0, 0, 0), r.move(5, 8), border_radius=14)
+        pygame.draw.rect(screen, (40, 44, 54), r, border_radius=14)
+        pygame.draw.rect(screen, (90, 96, 110), r, 4, border_radius=14)
+        core = pygame.Surface((r.width, r.height), pygame.SRCALPHA)
+        pygame.draw.circle(core, (200, 90, 255, int(90 + 80 * pulse)), (r.width // 2, r.height // 2), 26)
+        pygame.draw.circle(core, (245, 220, 255, 230), (r.width // 2, r.height // 2), 11)
+        screen.blit(core, r.topleft)
+
+# PVP settings panel (left side of the Play tab, like Waves Settings)
+def show_pvp_panel():
+    return selected_mode == "PVP" and play_multiplayer
+
+def pvp_panel_layout():
+    panel = waves_panel()
+    x, w = panel.x + 16, panel.width - 32
+    return {
+        "panel": panel,
+        "minus": pygame.Rect(x, panel.y + 104, 50, 46),
+        "plus": pygame.Rect(x + w - 50, panel.y + 104, 50, 46),
+        "no_upgrades": pygame.Rect(x, panel.y + 176, w, 50),
+        "first_to": pygame.Rect(x, panel.y + 246, w, 50),
+        "first_to_box": pygame.Rect(x, panel.y + 312, w, 50),
+    }
+
+def draw_checkbox_row(rect, text, checked, locked):
+    draw_button(rect, GREY_BUTTON if locked else BLUE)
+    box = pygame.Rect(rect.x + 10, rect.centery - 14, 28, 28)
+    pygame.draw.rect(screen, WHITE, box, border_radius=5)
+    pygame.draw.rect(screen, (40, 40, 40), box, 2, border_radius=5)
+    if checked:
+        pygame.draw.lines(screen, (30, 150, 60), False, [(box.x + 6, box.centery), (box.x + 12, box.bottom - 7), (box.right - 5, box.y + 6)], 4)
+    label = smaller_button_font.render(text, True, BLACK)
+    if label.get_width() > rect.width - 58:
+        label = pygame.transform.smoothscale(label, (rect.width - 58, label.get_height()))
+    screen.blit(label, label.get_rect(midleft=(box.right + 10, rect.centery)))
+
+def draw_pvp_panel():
+    layout = pvp_panel_layout()
+    panel = layout["panel"]
+    locked = multiplayer_guest()
+    draw_panel(panel)
+    title = coin_font.render("PVP Settings", True, WHITE)
+    screen.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 18)))
+    heading = smaller_button_font.render("Game length", True, (190, 196, 205))
+    screen.blit(heading, heading.get_rect(midtop=(panel.centerx, panel.y + 72)))
+    for key, sign in (("minus", "-"), ("plus", "+")):
+        draw_button(layout[key], GREY_BUTTON if locked else BLUE)
+        text = button_font.render(sign, True, BLACK)
+        screen.blit(text, text.get_rect(center=layout[key].center))
+    minutes = coin_font.render(f"{pvp_minutes} min", True, (255, 222, 95))
+    screen.blit(minutes, minutes.get_rect(center=(panel.centerx, layout["minus"].centery)))
+    draw_checkbox_row(layout["no_upgrades"], "No upgrades/abilities", pvp_no_upgrades, locked)
+    draw_checkbox_row(layout["first_to"], "First to #", pvp_first_to_on, locked)
+    if pvp_first_to_on:
+        box = layout["first_to_box"]
+        pygame.draw.rect(screen, WHITE, box, border_radius=8)
+        pygame.draw.rect(screen, (255, 200, 60) if pvp_first_to_focused else (40, 40, 40), box, 3 if pvp_first_to_focused else 2, border_radius=8)
+        shown = pvp_first_to_text or ("" if pvp_first_to_focused else "Type a number")
+        text = (button_font if pvp_first_to_text else small_button_font).render(shown, True, BLACK if pvp_first_to_text else (140, 140, 140))
+        screen.blit(text, text.get_rect(midleft=(box.x + 12, box.centery)))
+        hint = smaller_button_font.render("wins to win the game", True, (170, 175, 182))
+        screen.blit(hint, hint.get_rect(midtop=(panel.centerx, box.bottom + 8)))
+    if locked:
+        hint = smaller_button_font.render("The host picks these", True, (150, 155, 162))
+        screen.blit(hint, hint.get_rect(midbottom=(panel.centerx, panel.bottom - 14)))
+
+def handle_pvp_panel_click(pos):
+    """True if the click was on the PVP settings panel."""
+    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_focused, pvp_first_to_text
+    if not show_pvp_panel():
+        return False
+    layout = pvp_panel_layout()
+    if not layout["panel"].collidepoint(pos):
+        pvp_first_to_focused = False
+        return False
+    if multiplayer_guest():
+        return True
+    pvp_first_to_focused = False
+    if layout["minus"].collidepoint(pos):
+        pvp_minutes = max(1, pvp_minutes - 1)
+    elif layout["plus"].collidepoint(pos):
+        pvp_minutes = min(30, pvp_minutes + 1)
+    elif layout["no_upgrades"].collidepoint(pos):
+        pvp_no_upgrades = not pvp_no_upgrades
+    elif layout["first_to"].collidepoint(pos):
+        pvp_first_to_on = not pvp_first_to_on
+        pvp_first_to_focused = pvp_first_to_on
+        if pvp_first_to_on:
+            pvp_first_to_text = ""  # Ready for you to type the number
+    elif pvp_first_to_on and layout["first_to_box"].collidepoint(pos):
+        pvp_first_to_focused = True
+    return True
+
+def handle_pvp_panel_key(event):
+    """Typing the First to # number. True if the key was used."""
+    global pvp_first_to_text, pvp_first_to_focused
+    if not (show_pvp_panel() and pvp_first_to_on and pvp_first_to_focused and not multiplayer_guest()):
+        return False
+    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_ESCAPE):
+        pvp_first_to_focused = False
+    elif event.key == pygame.K_BACKSPACE:
+        pvp_first_to_text = pvp_first_to_text[:-1]
+    elif event.unicode.isdigit() and len(pvp_first_to_text) < 3:
+        pvp_first_to_text = (pvp_first_to_text + event.unicode).lstrip("0") or ""
+    return True
+
+def pvp_settings_message():
+    return {"k": "pvps", "min": pvp_minutes, "nu": pvp_no_upgrades, "ft": pvp_first_to_on, "n": pvp_first_to_text}
+
+def apply_pvp_settings(data):
+    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_text
+    pvp_minutes = max(1, min(30, int(data.get("min", pvp_minutes))))
+    pvp_no_upgrades = bool(data.get("nu", pvp_no_upgrades))
+    pvp_first_to_on = bool(data.get("ft", pvp_first_to_on))
+    text = str(data.get("n", pvp_first_to_text))
+    pvp_first_to_text = text if text.isdigit() or text == "" else pvp_first_to_text
+    if in_pvp and pvp_no_upgrades:
+        select_ability_slot(selected_ability_slot)
+
+def send_pvp_settings_to_lobby():
+    """Host, in the lobby: keep everyone's PVP settings panel showing ours."""
+    global pvp_settings_timer
+    if selected_mode != "PVP" or multiplayer_match:
+        return
+    pvp_settings_timer -= globals().get("dt", 1 / 60)
+    if pvp_settings_timer <= 0:
+        pvp_settings_timer = 0.5
+        net.relay(pvp_settings_message())
 
 def waves_panel():
     left = 24
@@ -6748,6 +7183,8 @@ def set_play_multiplayer(on):
     if not on:
         if net.lobby:
             net.leave_lobby()
+        if selected_mode in MULTIPLAYER_ONLY_MODES:
+            selected_mode = "Waves"
         return
     if selected_mode in MULTIPLAYER_SOLO_MODES:
         selected_mode = "Waves"
@@ -6775,7 +7212,9 @@ def update_multiplayer():
             net.create_lobby()  # Pressing Multiplayer opens your own lobby straight away
         elif kind == "relay":
             data = msg.get("d")
-            if isinstance(data, dict) and multiplayer_match:
+            if isinstance(data, dict) and data.get("k") == "pvps" and not net.is_host:
+                apply_pvp_settings(data)  # The host's PVP settings, shown in the lobby
+            elif isinstance(data, dict) and multiplayer_match:
                 try:
                     if data.get("k") == "p":
                         receive_player_state(str(msg.get("from")), data)
@@ -6811,10 +7250,13 @@ def update_multiplayer():
         if net_role() == "host":
             send_world(frame_dt)
         update_remote_players()
+        if in_pvp:
+            update_pvp(frame_dt)
     lobby = net.lobby
     if not play_multiplayer or lobby is None:
         return
     if net.is_host:
+        send_pvp_settings_to_lobby()
         wanted = (selected_mode, selected_map)
         if wanted != net_sent_settings and not lobby.get("started"):
             net.send_settings(*wanted)
@@ -6955,6 +7397,9 @@ def start_selected_mode():
         reset_game(shooting_range=True)
     elif selected_mode == "Tutorial":
         reset_game(tutorial=True)
+    elif selected_mode == "PVP":
+        reset_game()
+        pvp_start_game()
     else:
         reset_game()
         globals()["checkpoint_wave"] = 1
@@ -6964,7 +7409,7 @@ def handle_play_tab_click(pos):
     if map_menu_open:
         handle_map_menu_click(pos)
         return
-    if handle_waves_panel_click(pos) or handle_lobby_click(pos):
+    if handle_waves_panel_click(pos) or handle_pvp_panel_click(pos) or handle_lobby_click(pos):
         return
     if MAP_SELECT_BUTTON.collidepoint(pos):
         map_menu_open = True  # Guests can look (and buy), the host picks
@@ -6973,7 +7418,7 @@ def handle_play_tab_click(pos):
         return  # The host chooses and starts
     for name, rect in mode_row_rects():
         if rect.collidepoint(pos):
-            if not (play_multiplayer and name in MULTIPLAYER_SOLO_MODES):
+            if not (play_multiplayer and name in MULTIPLAYER_SOLO_MODES) and not (not play_multiplayer and name in MULTIPLAYER_ONLY_MODES):
                 selected_mode = name
             return
     if PLAY_BUTTON.collidepoint(pos):
@@ -7202,7 +7647,7 @@ def select_ability_slot(index):
     """Keys 1/2/3: right-click now uses what's in that slot."""
     global selected_ability_slot, equipped_ability, main_game_equipped_ability
     selected_ability_slot = index
-    equipped_ability = ability_slots[index]
+    equipped_ability = None if pvp_no_upgrades_active() else ability_slots[index]
     main_game_equipped_ability = equipped_ability
 
 def ability_slot_rects():
@@ -7415,7 +7860,7 @@ def handle_hub_event(event):
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             handle_map_menu_click(getattr(event, "pos", None) or pygame.mouse.get_pos())
         return
-    if hub_tab == "Play" and event.type == pygame.KEYDOWN and handle_lobby_key(event):
+    if hub_tab == "Play" and event.type == pygame.KEYDOWN and (handle_pvp_panel_key(event) or handle_lobby_key(event)):
         return
     if hub_tab == "Settings":
         handle_settings_content_event(event)  # Needs the raw event for its confirm boxes
@@ -7690,6 +8135,7 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
     global storm_survival_won, in_tutorial, tutorial_step, tutorial_state
     globals()["music_run"] += 1
     in_tutorial = tutorial
+    globals()["in_pvp"] = False
     tutorial_step = 0
     tutorial_state = {}
     wave_spawning = False
@@ -7885,6 +8331,8 @@ while running:
         screen.blit(metal_background, (0, 0))
     else:
         draw_world_background(game_over_zoom() if game_over else 1.0)
+        if in_pvp and not game_over:
+            draw_pvp_arena()
 
     for event in events:
         if event.type == pygame.QUIT:
@@ -8054,7 +8502,7 @@ while running:
                     # Don't shoot in editor mode
                     if not (in_shooting_range and shooting_range_editor_mode):
                         current_time = pygame.time.get_ticks() / 1000
-                        if current_time - last_shot_time >= shot_delay * (2 if active_gun_addon() in HALF_RATE_ADDONS else 1):
+                        if current_time - last_shot_time >= (GUN_SHOT_DELAYS[0] if pvp_no_upgrades_active() else shot_delay) * (2 if active_gun_addon() in HALF_RATE_ADDONS else 1):
                             bullet_speed = 10
                             center_x = orbit_x + mini_size // 2
                             center_y = orbit_y + mini_size // 2
@@ -8239,10 +8687,13 @@ while running:
         else:
             # Play mode: Player movement (a spectator steers the camera instead)
             if not game_paused and not spectating:
+                before_x, before_y = player_x, player_y
                 if keys[pygame.K_w]: player_y -= player_speed
                 if keys[pygame.K_s]: player_y += player_speed
                 if keys[pygame.K_a]: player_x -= player_speed
                 if keys[pygame.K_d]: player_x += player_speed
+                if in_pvp:
+                    player_x, player_y = pvp_slide_past_walls(before_x, before_y, player_x, player_y)
 
         # Update camera to follow player for unlimited map (only in play mode)
         if spectating:
@@ -8294,7 +8745,7 @@ while running:
 
         # Wave progression logic (only in main game, not shooting range, storm survival, or block defence)
         global wave_spawning
-        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and net_role() != "guest":
+        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and not in_pvp and net_role() != "guest":
             # Only trigger wave spawn if all enemy lists are empty and not already spawning
             if (not wave_spawning and
                 len(red_enemies) == 0 and len(green_enemies) == 0 and len(blue_enemies) == 0 and
@@ -8490,6 +8941,16 @@ while running:
                         bullet["y"] > MAP_HEIGHT - barrier_thickness - bullet_size):
                         bullets_to_remove.append(i)
                         bullet["expired"] = True
+                        continue
+
+                if in_pvp:
+                    if pvp_point_in_wall(bullet["x"] + bullet_size / 2, bullet["y"] + bullet_size / 2):
+                        bullets_to_remove.append(i)
+                        bullet["expired"] = True
+                        spawn_shot_clash(bullet["x"] + bullet_size / 2, bullet["y"] + bullet_size / 2)
+                        continue
+                    if pvp_bullet_hits_player(bullet):
+                        bullets_to_remove.append(i)
                         continue
 
                 # Check if bullet is too far from player (world coordinates)
@@ -9155,6 +9616,9 @@ while running:
         elif in_storm_survival:
             draw_storm_timer(max(0, math.ceil(180 - game_timer)))  # Barrier Shrink shows its time in the tab up top
             stats.append(enemy_stat)
+        elif in_pvp:
+            draw_storm_timer(max(0, math.ceil(pvp_state["time_left"])))
+            draw_pvp_hud()
         else:
             stats.append(("time", f"{int(game_timer // 60):02d}:{int(game_timer % 60):02d}", WHITE))
             if not in_shooting_range and not in_tutorial:  # Waves
@@ -9165,7 +9629,7 @@ while running:
         draw_spectator_hud()
 
         # Draw wave top left (hide wave in shooting range, storm survival, and block defence)
-        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial:
+        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and not in_pvp:
             wave_text = coin_font.render(f"Wave {wave}", True, WHITE)
             blit_hud(wave_text, (20, 20))
         elif in_storm_survival:
