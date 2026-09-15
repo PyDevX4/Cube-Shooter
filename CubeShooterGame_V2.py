@@ -307,6 +307,7 @@ last_wave = 1
 
 # Game timer
 game_timer = 0.0
+music_run = 0  # Goes up every new game, so a song restarts from the top
 
 # Camera offset for unlimited map
 camera_x = 0
@@ -7228,6 +7229,7 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
     global triple_bullet_active, triple_bullet_cooldown, triple_bullet_timer, wave_spawning
     global shooting_range_editor_mode, shooting_range_play_mode, camera_x, camera_y
     global storm_survival_won, in_tutorial, tutorial_step, tutorial_state
+    globals()["music_run"] += 1
     in_tutorial = tutorial
     tutorial_step = 0
     tutorial_state = {}
@@ -9149,6 +9151,9 @@ while running:
         pygame.draw.rect(screen, (30, 30, 30), message_rect.inflate(30, 16), border_radius=10)
         screen.blit(message_surface, message_rect)
 
+    # Barrier Shrink song: starts with the round, pauses with the game, stops when it ends
+    sounds.update_music("barrier_shrink" if in_storm_survival and not start_screen and not game_over and not storm_survival_won else None,
+                        music_run, paused=game_paused)
     pygame.display.flip()
 
 pygame.quit()

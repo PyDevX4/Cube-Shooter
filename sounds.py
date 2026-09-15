@@ -116,3 +116,50 @@ def play(event, volume=1.0):
     sound.set_volume(volume)
     sound.play()
     _last_play[event] = now
+
+
+# ---- Music: one song at a time, looked up by name like the sound effects ----
+SONGS = {
+    "barrier_shrink": ["barrier_shrink", "barier_shrink", "storm", "barrier_shrink_music"],
+}
+_song = None       # (name, run) currently loaded
+_song_paused = False
+
+
+def _song_path(name):
+    if time.monotonic() - _last_scan > RESCAN_EVERY:
+        _scan()
+    for folder in folders():
+        try:
+            entries = os.listdir(folder)
+        except OSError:
+            continue
+        for alias in [name] + SONGS.get(name, []):
+            for entry in entries:
+                stem, ext = os.path.splitext(entry)
+                if ext.lower() in EXTENSIONS and _key(stem) == _key(alias):
+                    return os.path.join(folder, entry)
+    return None
+
+
+def update_music(name, run=0, paused=False, volume=0.7):
+    """Call every frame with the song that should be playing (or None). A new `run` restarts it from the top."""
+    global _song, _song_paused
+    if not _init():
+        return
+    wanted = (name, run) if name else None
+    if wanted != _song:
+        pygame.mixer.music.stop()
+        _song, _song_paused = wanted, False
+        if name:
+            path = _song_path(name)
+            if path:
+                try:
+                    pygame.mixer.music.load(path)
+                    pygame.mixer.music.set_volume(volume)
+                    pygame.mixer.music.play()
+                except pygame.error:
+                    pass
+    if _song and paused != _song_paused:
+        (pygame.mixer.music.pause if paused else pygame.mixer.music.unpause)()
+        _song_paused = paused
