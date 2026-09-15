@@ -83,11 +83,7 @@ kill_cheat_enabled = False
 no_death_cheat_enabled = False
 
 # Code console (press ` at any time to type a cheat code)
-CHEAT_CODES = {
-    "coinhack": "coin",   # L gives +1000 coins
-    "killhack": "kill",   # K kills every enemy
-    "god": "no_death",    # M toggles invincibility
-}
+# "keys" turns on all the shortcut keys: L +1000 coins, K kills every enemy, M toggles invincibility
 console_open = False
 console_input = ""
 console_was_paused = False
@@ -2181,15 +2177,15 @@ def run_console_command(text):
     global console_open, console_input, console_message, console_message_timer, admin_code_open, admin_code_input
     global coin_cheat_enabled, kill_cheat_enabled, no_death_cheat_enabled
     command = text.strip().lower()
-    if command == "admin":
-        console_open = False
-        console_input = ""
-        globals()["admin_panel_open"] = True  # Your account is an admin, so no code needed
-        return
     compact = command.replace(" ", "")
     if not admin_unlocked:
         console_message, console_message_timer = "Commands are for admin accounts only", 3.0
         console_input = ""
+        return
+    if compact == "keys":
+        coin_cheat_enabled = kill_cheat_enabled = no_death_cheat_enabled = True
+        console_message, console_message_timer = "Shortcut keys on! L +1000 coins, K kill all, M invincible", 3.5
+        close_console_stack()
         return
     if compact == "respawn":
         respawn_all_players(announce=True)
@@ -2211,31 +2207,17 @@ def run_console_command(text):
             console_input = ""
             console_message_timer = 3.0
         return
-    for boss_command in boss_waves:  # redboss25, blueboss50...: set the current boss's health
-        number = compact[len(boss_command):]
-        if compact.startswith(boss_command) and number.isdigit():
-            if set_boss_health(boss_command[:-len("boss")], int(number)):
-                close_console_stack()
-            else:
-                console_input = ""
-                console_message_timer = 3.0
+    if compact.isdigit():  # Just a number during a boss fight: the boss goes to that health
+        if active_boss is None:
+            console_message = "You're not in a boss fight"
+        elif set_boss_health(active_boss["kind"], int(compact)):
+            close_console_stack()
             return
-    cheat = CHEAT_CODES.get(command)
-    if cheat == "coin":
-        coin_cheat_enabled = True
-        console_message = "Coin cheat on! Press L for +1000 coins"
-    elif cheat == "kill":
-        kill_cheat_enabled = True
-        console_message = "Kill cheat on! Press K to kill all enemies"
-    elif cheat == "no_death":
-        no_death_cheat_enabled = True
-        console_message = "No-death cheat on! Press M to toggle invincibility"
-    else:
-        console_message = "Unknown code"
-    console_message_timer = 3.0
+        console_input = ""
+        console_message_timer = 3.0
+        return
+    console_message, console_message_timer = "Unknown command", 3.0
     console_input = ""
-    if cheat:
-        close_console_stack()
 
 def admin_give_everything():
     """Unlock every skin, upgrade and ability, and top the coins up."""
@@ -7521,6 +7503,15 @@ while running:
                 console_input = ""
                 console_was_paused = game_paused
                 game_paused = True  # Freeze the game while typing
+            continue
+        # Admin accounts: Z opens (or closes) the admin menu
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_z and admin_unlocked and not console_open and not admin_code_open:
+            if admin_panel_open:
+                close_console_stack()
+            else:
+                console_was_paused = game_paused
+                game_paused = True
+                admin_panel_open = True
             continue
         if enemy_menu_open and not console_open and not admin_code_open and not admin_panel_open:
             handle_enemy_menu_event(event)
