@@ -365,6 +365,17 @@ block_menu_was_paused = False
 BLOCK_REPAIRS = [(5, 3), (15, 8), (BLOCK_MAX_HEALTH, 15)]  # (health, points); the last one is a full repair
 # Block Defence game over timer
 block_defence_game_over_timer = 0.0
+BLOCK_DEFENCE_TIME = 300   # 5 minutes: keep the block alive until then to win
+BLOCK_END_DELAY = 5.0
+block_end = None           # {"won", "timer"} once the Block Defence game is over
+
+def start_block_end(won):
+    """Time's up with the block alive (win), or the block is destroyed (lose): every enemy dies, spawning stops."""
+    global block_end
+    block_end = {"won": won, "timer": BLOCK_END_DELAY}
+    kill_all_enemies_no_coins()
+    blue_bullets.clear()
+    sounds.play("wave_complete" if won else "player_death")
 
 def _glow_dot(surface, center, radius, color, alpha=255):
     """Additive blob of light, brightest in the middle - the building block for all the glows below."""
@@ -1399,7 +1410,7 @@ else:
     timer_font = pygame.font.SysFont(None, 72, bold=True)
     ability_badge_font = pygame.font.SysFont(None, 40, bold=True)
 
-def draw_storm_timer(seconds_left):
+def draw_storm_timer(seconds_left, metal=False):
     """Barrier Shrink countdown: glowing red digits in a dark tab hanging from the top-center of the screen.
     The tab is wider at the top than the bottom; in the last 30 seconds the red pulses faster."""
     top_w, bottom_w, h = 300, 230, 80
@@ -1412,8 +1423,26 @@ def draw_storm_timer(seconds_left):
     glow = pygame.Surface((top_w + 40, h + 30), pygame.SRCALPHA)
     local_points = [(x - glow_x, y) for x, y in points]
     for width, alpha in ((14, 40), (8, 80)):
-        pygame.draw.polygon(glow, (255, 30, 30, int(alpha * (0.7 + 0.3 * pulse))), local_points, width)
+        pygame.draw.polygon(glow, (255, 30, 30, int(alpha * (0.7 + 0.3 * pulse))) if not metal
+                            else (0, 0, 0, alpha), local_points, width)
     screen.blit(glow, (glow_x, 0))
+    if metal:  # Block Defence: the same tab, in the menus' brushed metal
+        plate = pygame.Surface((WIDTH, h + 8), pygame.SRCALPHA)
+        plate.blit(metal_background, (0, 0), (0, 0, WIDTH, h + 8))
+        tab_mask = pygame.Surface((WIDTH, h + 8), pygame.SRCALPHA)
+        pygame.draw.polygon(tab_mask, (255, 255, 255, 255), points)
+        plate.blit(tab_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+        screen.blit(plate, (0, 0))
+        pygame.draw.polygon(screen, (40, 44, 52), points, 4)
+        pygame.draw.polygon(screen, (175, 182, 192), points, 2)
+        text = f"{seconds_left // 60}:{seconds_left % 60:02d}"
+        center = (cx, h // 2 - 2)
+        shadow = timer_font.render(text, True, (20, 22, 28))
+        screen.blit(shadow, shadow.get_rect(center=(center[0] + 2, center[1] + 3)))
+        color = (255, int(90 + 80 * pulse), 80) if urgent else (245, 248, 252)
+        label = timer_font.render(text, True, color)
+        screen.blit(label, label.get_rect(center=center))
+        return
     # The tab is filled with the same red energy grid as the barrier, cut to the tab's shape
     grid_fill = pygame.Surface((WIDTH, h + 8), pygame.SRCALPHA)
     grid_fill.fill((40, 0, 0, 215))
@@ -1650,12 +1679,25 @@ UPGRADE_FLAGS = ["has_gun_upgrade", "has_gun_upgrade_1", "has_gun_upgrade_2", "h
                  "has_gun_upgrade_4", "has_gun_upgrade_5",
                  "has_magnet_1", "has_magnet_2", "has_magnet_3", "has_magnet_4", "has_magnet_5",
                  "has_shield", "has_teleport", "has_freeze",
-                 "has_shockwave", "has_helpers", "has_coin_controller", "has_triple_bullet", "has_full_auto"]
+                 "has_shockwave", "has_helpers", "has_coin_controller", "has_triple_bullet", "has_full_auto", "has_explosive_bullets"]
 # Gun add-ons: only one equipped at a time
 GUN_ADDONS = [{"key": "full_auto", "name": "Full Auto", "flag": "has_full_auto", "price": 1500,
                "about": "Hold the mouse to keep shooting"},
               {"key": "triple_bullet", "name": "Triple Bullet", "flag": "has_triple_bullet", "price": 2000,
-               "about": "3 bullets, half the fire rate"}]
+               "about": "3 bullets, half the fire rate"},
+              {"key": "explosive_bullets", "name": "Explosive Bullets", "flag": "has_explosive_bullets", "price": 2500,
+               "about": "Blasts on hit, half the fire rate"}]
+has_explosive_bullets = False
+main_game_has_explosive_bullets = False
+HALF_RATE_ADDONS = ("triple_bullet", "explosive_bullets")
+EXPLOSION_RADIUS = 85       # Explosive Bullets: the blast grows to this size...
+EXPLOSION_GROW = 0.25       # ...over this long, killing everything it touches
+explosions = []
+in_pvp = False             # Playing the multiplayer PVP mode
+pvp_no_upgrades = False    # PVP setting: everyone plays with level 1 everything and no abilities
+
+def pvp_no_upgrades_active():
+    return in_pvp and pvp_no_upgrades
 has_full_auto = False
 main_game_has_full_auto = False
 gun_addon = None  # The equipped add-on's key
@@ -6081,6 +6123,18 @@ def ability_icon(key):
             coin = pygame.transform.smoothscale(coin_orb, (26, 26))
             for x, y in ((22, 58), (42, 60), (62, 58), (32, 42), (52, 42), (42, 25)):  # A pile of coins
                 surf.blit(coin, coin.get_rect(center=(x, y)))
+        elif key == "full_auto":
+            for i in range(5):  # A row of shots flying side by side
+                draw_laser("player", 14 + i * 14, c - 14, 0, -10)
+        elif key == "explosive_bullets":
+            pygame.draw.circle(surf, (255, 150, 40, 80), (c + 10, c - 8), 30)
+            for spoke in range(10):
+                ang = spoke * math.pi / 5
+                pygame.draw.line(surf, (255, 210, 90), (c + 10 + math.cos(ang) * 12, c - 8 + math.sin(ang) * 12),
+                                 (c + 10 + math.cos(ang) * 30, c - 8 + math.sin(ang) * 30), 3)
+            pygame.draw.circle(surf, (255, 120, 30), (c + 10, c - 8), 18, 5)
+            pygame.draw.circle(surf, (255, 245, 200), (c + 10, c - 8), 9)
+            draw_laser("player", c + 2, c, 10, -8)
         elif key == "triple_bullet":
             for spread in (-0.42, 0.0, 0.42):  # Three blue shots fanning out from the corner, like the ability
                 ang = -math.pi / 4 + spread
@@ -7072,7 +7126,7 @@ def draw_upgrades_tab():
                     button_color, label = BLUE, f"Buy - {item['price']}"
                 else:
                     button_color, label = DARK_RED, f"Need {item['price']}"
-                draw_shop_card(card, button, "ADD-ON", SHOP_ICONS[item["key"]], item["name"], button_color, label)
+                draw_shop_card(card, button, "ADD-ON", ability_icon(item["key"]), item["name"], button_color, label)
                 about = smaller_button_font.render(item["about"], True, (190, 196, 205))
                 if about.get_width() > card.width - 16:
                     about = pygame.transform.smoothscale(about, (card.width - 16, about.get_height()))
@@ -7522,6 +7576,75 @@ def spawn_purple():
     purple_mini_circles.append([[0, 0, k * math.pi / 2] for k in range(4)])
     update_purple_minis(len(purple_enemies) - 1)
 
+def active_gun_addon():
+    """The add-on that's working right now (PVP with no upgrades turns them off)."""
+    return None if pvp_no_upgrades_active() else gun_addon
+
+def kill_enemies_in_circle(cx, cy, radius):
+    """Everything (not bosses) touching the circle dies. Returns how many."""
+    global kills
+    half = player_size / 2
+    count = 0
+    inside = lambda ex, ey: math.hypot(ex + half - cx, ey + half - cy) < radius + half
+    for group, kind in ((red_enemies, "red"), (green_enemies, "green")):
+        for i in reversed(range(len(group))):
+            ex, ey = group[i]
+            if inside(ex, ey):
+                group.pop(i)
+                enemy_killed(ex, ey, kind)
+                count += 1
+    for i in reversed(range(len(blue_enemies))):
+        ex, ey = blue_enemies[i]
+        if inside(ex, ey):
+            blue_enemies.pop(i)
+            if i < len(blue_last_shot_times):
+                blue_last_shot_times.pop(i)
+            enemy_killed(ex, ey, "blue")
+            count += 1
+    for i in reversed(range(len(purple_enemies))):
+        minis = purple_mini_circles[i]
+        for k in reversed(range(len(minis))):
+            mx, my, _ = minis[k]
+            if math.hypot(mx - cx, my - cy) < radius + purple_mini_size / 2:
+                spawn_death_effect(mx, my, "purple_mini")
+                minis.pop(k)
+        ex, ey = purple_enemies[i]
+        if not minis and inside(ex, ey):
+            remove_purple(i)
+            enemy_killed(ex, ey, "purple")
+            count += 1
+    for kind, group in dict_enemy_groups():
+        for enemy in group[:]:
+            if inside(enemy["x"], enemy["y"]):
+                group.remove(enemy)
+                enemy_killed(enemy["x"], enemy["y"], kind)
+                count += 1
+    kills += count
+    return count
+
+def update_explosions(dt):
+    """Explosive Bullets: each blast grows for a moment, killing what it reaches, then fades."""
+    for blast in explosions:
+        blast["age"] += dt
+        if blast["age"] <= EXPLOSION_GROW + dt:
+            kill_enemies_in_circle(blast["x"], blast["y"], EXPLOSION_RADIUS * min(1.0, blast["age"] / EXPLOSION_GROW))
+    explosions[:] = [b for b in explosions if b["age"] < EXPLOSION_GROW + 0.25]
+
+def draw_explosions():
+    for blast in explosions:
+        grow = min(1.0, blast["age"] / EXPLOSION_GROW)
+        fade = 1.0 if blast["age"] < EXPLOSION_GROW else max(0.0, 1 - (blast["age"] - EXPLOSION_GROW) / 0.25)
+        radius = max(2, int(EXPLOSION_RADIUS * grow))
+        sx, sy = blast["x"] - camera_x, blast["y"] - camera_y
+        if not on_screen(sx, sy, radius + 10):
+            continue
+        layer = pygame.Surface((radius * 2 + 8, radius * 2 + 8), pygame.SRCALPHA)
+        c = radius + 4
+        pygame.draw.circle(layer, (255, 140, 40, int(90 * fade)), (c, c), radius)
+        pygame.draw.circle(layer, (255, 220, 120, int(230 * fade)), (c, c), radius, 5)
+        pygame.draw.circle(layer, (255, 250, 220, int(200 * fade * (1 - grow * 0.6))), (c, c), max(1, radius // 3))
+        screen.blit(layer, (sx - c, sy - c))
+
 def remove_purple(i):
     """Remove purple enemy i along with its mini circles."""
     purple_enemies.pop(i)
@@ -7604,6 +7727,7 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
             globals()['block_health'] = 50
             reset_game.block_health_initialized = True
         globals()['block_defence_game_over_timer'] = 0.0
+        globals()['block_end'] = None
         globals()['block_defence_points'] = 0
     # Initialize storm survival map size (the Sandbox keeps its own barrier size setting)
     if shooting_range:
@@ -7741,7 +7865,7 @@ while running:
 
     screen.fill(BLACK)
     events = pygame.event.get()  # Only call this ONCE per frame
-    if (gun_addon == "full_auto" and pygame.mouse.get_pressed()[0] and not (start_screen or hub_open or settings_open)
+    if (active_gun_addon() == "full_auto" and pygame.mouse.get_pressed()[0] and not (start_screen or hub_open or settings_open)
             and not game_over and not game_paused and not globals().get("spectating") and not console_open
             and not admin_panel_open and not pause_menu_open and not enemy_menu_open and not block_menu_open
             and sandbox_place is None and pygame.mouse.get_focused()
@@ -7930,13 +8054,13 @@ while running:
                     # Don't shoot in editor mode
                     if not (in_shooting_range and shooting_range_editor_mode):
                         current_time = pygame.time.get_ticks() / 1000
-                        if current_time - last_shot_time >= shot_delay * (2 if gun_addon == "triple_bullet" else 1):
+                        if current_time - last_shot_time >= shot_delay * (2 if active_gun_addon() in HALF_RATE_ADDONS else 1):
                             bullet_speed = 10
                             center_x = orbit_x + mini_size // 2
                             center_y = orbit_y + mini_size // 2
                             tip_offset = mini_size // 2
                             
-                            if gun_addon == "triple_bullet":  # Gun add-on: 3 bullets at half the fire rate
+                            if active_gun_addon() == "triple_bullet":  # Gun add-on: 3 bullets at half the fire rate
                                 # Shoot three bullets in a spread pattern
                                 angles = [last_rot_angle - 0.3, last_rot_angle, last_rot_angle + 0.3]  # 30-degree spread
                                 for angle in angles:
@@ -8365,6 +8489,7 @@ while running:
                         bullet["y"] < barrier_thickness or 
                         bullet["y"] > MAP_HEIGHT - barrier_thickness - bullet_size):
                         bullets_to_remove.append(i)
+                        bullet["expired"] = True
                         continue
 
                 # Check if bullet is too far from player (world coordinates)
@@ -8375,6 +8500,7 @@ while running:
                     bullet_distance = math.hypot(bullet["x"] - player_x, bullet["y"] - player_y)
                 if bullet_distance > WIDTH * 2:  # Remove bullets that are too far away
                     bullets_to_remove.append(i)
+                    bullet["expired"] = True
                     continue
 
                 # Check red enemy hits
@@ -8469,7 +8595,11 @@ while running:
 
             # A bullet can be marked more than once (e.g. touching two enemies), so only remove it once
             for i in sorted(set(bullets_to_remove), reverse=True):
-                bullets.pop(i)
+                gone = bullets.pop(i)
+                if active_gun_addon() == "explosive_bullets" and not gone.get("owner") and not gone.get("expired"):
+                    explosions.append({"x": gone["x"] + bullet_size / 2, "y": gone["y"] + bullet_size / 2, "age": 0.0})
+                    sounds.play("teal_explode", 0.5)
+            update_explosions(dt)
 
             # Coin pickup logic
             if not in_shooting_range and not spectating:  # Coins drop and can be collected in every mode except the Sandbox
@@ -9003,6 +9133,7 @@ while running:
             spawn_death_effect(player_x + player_size / 2, player_y + player_size / 2, "player", SKIN_GLOWS.get(current_skin, player_color))
 
         # In-game buttons and minimap (drawn after the death snapshot so they aren't frozen into the game-over screen)
+        draw_explosions()
         draw_game_buttons()
         draw_minimap()
         if in_tutorial:
@@ -9018,8 +9149,7 @@ while running:
                        + len(orange_enemies) + len(yellow_enemies) + len(teal_enemies) + len(pink_enemies) + len(violet_enemies) + (1 if active_boss is not None else 0))
         enemy_stat = ("enemies", str(enemy_count), (255, 140, 130))
         if in_block_defence:
-            time_left = max(0, 301 - game_timer)  # 5-minute countdown that starts at 5:00
-            stats.append(("time", f"{int(time_left // 60):02d}:{int(time_left % 60):02d}", RED if time_left <= 0 else WHITE))
+            draw_storm_timer(max(0, math.ceil(BLOCK_DEFENCE_TIME - game_timer)), metal=True)  # Metal tab up top
             stats.append(enemy_stat)
             stats.append(("points", f"P: {block_defence_points}", (120, 220, 255)))
         elif in_storm_survival:
@@ -9042,11 +9172,14 @@ while running:
             # Draw win message if player has won
             pass  # The win shows on the wave complete banner
         elif in_block_defence:
-            # Show "You Lose!" text when block health reaches 0
-            if block_health <= 0:
-                lose_text = font.render("You Lose!", True, RED)
-                lose_rect = lose_text.get_rect(center=(WIDTH // 2, 40))
-                screen.blit(lose_text, lose_rect)
+            if block_end is not None:  # You Win! / You Lose! in big bubble letters
+                if block_end["won"]:
+                    end_text = get_bubble_text("You Win!", 110, (255, 245, 150), (255, 160, 40))
+                else:
+                    end_text = get_bubble_text("You Lose!", 110, (255, 190, 180), (220, 40, 40))
+                bounce = ease_out_back(min(1.0, (BLOCK_END_DELAY - block_end["timer"]) / 0.5))
+                end_text = pygame.transform.smoothscale_by(end_text, max(0.05, bounce))
+                screen.blit(end_text, end_text.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 60)))
         
         # Wave complete banner: drops in from the top, hangs there, then flies back up
         if wave_completion_timer > 0:
@@ -9322,8 +9455,20 @@ while running:
         
         # Block Defence enemy spawning
         elif in_block_defence:
-            # Only spawn enemies if block health is above 0
-            if block_health > 0:
+            if block_end is None and block_health <= 0:
+                start_block_end(False)
+            elif block_end is None and game_timer >= BLOCK_DEFENCE_TIME:
+                start_block_end(True)
+            if block_end is not None:  # The game is over: nothing spawns, and 5 s later back to the menu
+                block_end["timer"] -= dt
+                if block_end["timer"] <= 0:
+                    block_end = None
+                    if multiplayer_match:
+                        if net_role() == "host":
+                            net.end_match()
+                    else:
+                        exit_to_main_menu()
+            elif block_health > 0:
                 # Red every 2 seconds, green every 6, blue every 10, purple every 30, orange every 45
                 if storm_spawn_due("bd_red", 2):
                     red_enemies.append(get_safe_enemy_spawn())
@@ -9336,32 +9481,6 @@ while running:
                     spawn_purple()
                 if storm_spawn_due("bd_orange", 45):
                     orange_enemies.append(new_orange_enemy(*get_safe_enemy_spawn()))
-            else:
-                # Block health is 0, despawn all enemies
-                red_enemies.clear()
-                green_enemies.clear()
-                blue_enemies.clear()
-                blue_last_shot_times.clear()
-                blue_bullets.clear()
-                purple_enemies.clear()
-                purple_mini_circles.clear()
-                orange_enemies.clear()
-                yellow_enemies.clear()
-                teal_enemies.clear()
-                pink_enemies.clear()
-                violet_enemies.clear()
-                
-                # Start game over timer if not already started
-                if block_defence_game_over_timer == 0.0:
-                    block_defence_game_over_timer = game_timer
-                
-                # Return to main menu after 3 seconds
-                if game_timer - block_defence_game_over_timer >= 3.0:
-                    start_screen = True
-                    in_block_defence = False
-                    block_defence_game_over_timer = 0.0
-                    # Reset Block Defence coins when game over
-                    block_defence_coins = 0
 
     # Wave completion timer logic
     if wave_completion_timer > 0:
