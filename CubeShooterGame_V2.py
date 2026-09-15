@@ -303,6 +303,10 @@ helper_size = 20
 wave_completion_message = ""
 wave_completion_timer = 0.0
 wave_completion_duration = 3.0  # How long to show the message
+wave_completion_length = 3.0    # How long the banner on screen right now lasts (the Barrier Shrink win is longer)
+STORM_WIN_COINS = 50
+STORM_WIN_DELAY = 5.0            # Barrier Shrink: You Win! stays up this long, then back to the menu
+storm_win_timer = None
 last_wave = 1
 
 # Game timer
@@ -6342,7 +6346,7 @@ def apply_world(packed):
 
 def apply_world_event(event):
     """Not the host: something happened in the host's game."""
-    global coin_count, main_game_coins, best_wave, wave_completion_message, wave_completion_timer, block_defence_coins
+    global coin_count, main_game_coins, best_wave, wave_completion_message, wave_completion_timer, wave_completion_length, block_defence_coins
     kind = event[0]
     if kind == "kill":
         _, x, y, enemy = event
@@ -6355,7 +6359,7 @@ def apply_world_event(event):
     elif kind == "wave":
         _, reward, boss_wave, number = event
         wave_completion_message = "Boss Wave Completed!" if boss_wave else f"Wave {number} Complete!"
-        wave_completion_timer = wave_completion_duration
+        wave_completion_timer = wave_completion_length = wave_completion_duration
         sounds.play("boss_wave_complete" if boss_wave else "wave_complete")
         best_wave = max(best_wave, number)
         coin_count += reward
@@ -7838,7 +7842,7 @@ while running:
                         checkpoint_wave = wave
                         if checkpoints_on:
                             console_message, console_message_timer = f"Checkpoint reached: wave {wave}", 3.0
-                    wave_completion_timer = wave_completion_duration
+                    wave_completion_timer = wave_completion_length = wave_completion_duration
                     coin_count += wave_completion_reward
                     main_game_coins = coin_count
                     if net_role() == "host":
@@ -8689,10 +8693,7 @@ while running:
             blit_hud(wave_text, (20, 20))
         elif in_storm_survival:
             # Draw win message if player has won
-            if storm_survival_won:
-                win_text = font.render("You Win!", True, YELLOW)
-                win_rect = win_text.get_rect(center=(WIDTH // 2, 150))  # Below the timer tab
-                blit_hud(win_text, win_rect)
+            pass  # The win shows on the wave complete banner
         elif in_block_defence:
             # Show "You Lose!" text when block health reaches 0
             if block_health <= 0:
@@ -8704,7 +8705,7 @@ while running:
         if wave_completion_timer > 0:
             banner = get_bubble_text(wave_completion_message, 72, (255, 240, 120), (255, 150, 30))
             reward = get_bubble_text(f"+{wave_completion_reward} Coins", 40, (255, 250, 200), (255, 200, 40), outline=6)
-            shown_for = wave_completion_duration - wave_completion_timer
+            shown_for = wave_completion_length - wave_completion_timer
             if shown_for < 0.45:
                 slide = ease_out_back(shown_for / 0.45)  # Dropping in
             elif wave_completion_timer < 0.4:
@@ -8890,6 +8891,22 @@ while running:
         if shockwave_cooldown < 0:
             shockwave_cooldown = 0
 
+    # Barrier Shrink win: You Win! +50 coins on the banner, 5 seconds, then back to the menu (the song keeps going)
+    if in_storm_survival and not start_screen and not game_over:
+        if storm_survival_won and storm_win_timer is None:
+            storm_win_timer = STORM_WIN_DELAY
+            wave_completion_message, wave_completion_reward = "You Win!", STORM_WIN_COINS
+            wave_completion_timer = wave_completion_length = STORM_WIN_DELAY
+            coin_count += STORM_WIN_COINS
+            main_game_coins = coin_count
+            sounds.play("wave_complete")
+        elif storm_win_timer is not None and not game_paused:
+            storm_win_timer -= dt
+            if storm_win_timer <= 0:
+                storm_win_timer = None
+                exit_to_main_menu()
+    elif storm_win_timer is not None:
+        storm_win_timer = None
     # Game timer logic (only count when not paused and not in menus)
     if (not start_screen and not game_over and not game_paused
             and not hub_open and not settings_open):
@@ -9152,7 +9169,7 @@ while running:
         screen.blit(message_surface, message_rect)
 
     # Barrier Shrink song: starts with the round, pauses with the game, stops when it ends
-    sounds.update_music("barrier_shrink" if in_storm_survival and not start_screen and not game_over and not storm_survival_won else None,
+    sounds.update_music("barrier_shrink" if in_storm_survival and not start_screen and not game_over else None,
                         music_run, paused=game_paused)
     pygame.display.flip()
 
