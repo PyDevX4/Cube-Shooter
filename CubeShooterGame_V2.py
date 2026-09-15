@@ -1650,7 +1650,13 @@ UPGRADE_FLAGS = ["has_gun_upgrade", "has_gun_upgrade_1", "has_gun_upgrade_2", "h
                  "has_gun_upgrade_4", "has_gun_upgrade_5",
                  "has_magnet_1", "has_magnet_2", "has_magnet_3", "has_magnet_4", "has_magnet_5",
                  "has_shield", "has_teleport", "has_freeze",
-                 "has_shockwave", "has_helpers", "has_coin_controller", "has_triple_bullet"]
+                 "has_shockwave", "has_helpers", "has_coin_controller", "has_triple_bullet", "has_full_auto"]
+# Gun add-ons: only one equipped at a time
+GUN_ADDONS = [{"key": "full_auto", "name": "Full Auto", "flag": "has_full_auto", "price": 1500,
+               "about": "Hold the mouse to keep shooting"}]
+has_full_auto = False
+main_game_has_full_auto = False
+gun_addon = None  # The equipped add-on's key
 # Abilities: key, display name, icon color, price
 ABILITIES = [("freeze", "Freeze", (150, 220, 255), 1500), ("shield", "Shield", (90, 160, 255), 1500),
              ("teleport", "Teleport", (190, 120, 255), 1300), ("helpers", "Helpers", (255, 210, 90), 1800),
@@ -1708,6 +1714,7 @@ def progress_state():
         "equipped_ability": main_game_equipped_ability,
         "ability_slots": list(ability_slots),
         "ability_slot": selected_ability_slot,
+        "gun_addon": gun_addon,
         "best_wave": best_wave,
         "map": selected_map,
         "owned_maps": sorted(owned_maps),
@@ -1734,6 +1741,8 @@ def apply_progress(progress):
     g["selected_ability_slot"] = int(progress.get("ability_slot", 0)) % 3
     select_ability_slot(g["selected_ability_slot"])
     g["shot_delay"] = g["main_game_shot_delay"] = GUN_SHOT_DELAYS[gun_level()]
+    addon = progress.get("gun_addon")
+    g["gun_addon"] = addon if any(a["key"] == addon and g[a["flag"]] for a in GUN_ADDONS) else None
     g["best_wave"] = int(progress.get("best_wave", 0))
     g["owned_maps"] = set(FREE_MAPS) | {m for m in progress.get("owned_maps", []) if m in MAP_NAMES}
     g["selected_map"] = progress.get("map") if progress.get("map") in g["owned_maps"] else "Grass"
@@ -5994,6 +6003,7 @@ for _i, _tab in enumerate(HUB_TABS):
 HUB_VIEWPORT = pygame.Rect(0, 186, WIDTH, HEIGHT - 196)
 
 SHOP_ICONS = {"gun": create_orb_sprite((120, 200, 255), 30, glow=8),
+              "full_auto": create_orb_sprite((255, 120, 70), 30, glow=8),
               "magnet": create_orb_sprite((255, 200, 60), 30, glow=8)}
 
 def ability_icon(key):
@@ -6985,27 +6995,91 @@ SHOP_UPGRADES = [
     {"tag": "MAGNET", "name": "Magnet V", "flag": "has_magnet_5", "price": 12000, "needs": "has_magnet_4", "needs_name": "Magnet IV", "icon": "magnet"},
 ]
 
+def upgrade_sections():
+    """The Upgrades tab laid out top to bottom: (heading, [(item, card, button)]) for Gun, Gun Add-ons and Coins."""
+    groups = [("GUN", [u for u in SHOP_UPGRADES if u["tag"] == "GUN"]),
+              ("GUN ADD-ONS  (one at a time)", GUN_ADDONS),
+              ("COINS", [u for u in SHOP_UPGRADES if u["tag"] == "MAGNET"])]
+    grid_w = SKIN_COLUMNS * SKIN_CARD_W + (SKIN_COLUMNS - 1) * SKIN_CARD_GAP
+    left = (WIDTH - grid_w) // 2
+    y = SHOP_UPGRADE_VIEWPORT.y + 10 - round(shop_upgrade_scroll)
+    sections = []
+    for heading, items in groups:
+        heading_y = y
+        y += 44
+        placed = []
+        for i, item in enumerate(items):
+            card = pygame.Rect(left + (i % SKIN_COLUMNS) * (SKIN_CARD_W + SKIN_CARD_GAP),
+                               y + (i // SKIN_COLUMNS) * (SKIN_CARD_H + SKIN_CARD_GAP), SKIN_CARD_W, SKIN_CARD_H)
+            placed.append((item, card, pygame.Rect(card.x + 20, card.bottom - 62, card.width - 40, 44)))
+        y += math.ceil(len(items) / SKIN_COLUMNS) * (SKIN_CARD_H + SKIN_CARD_GAP) + 10
+        sections.append((heading, heading_y, placed))
+    return sections, y + round(shop_upgrade_scroll)
+
+def max_upgrade_scroll():
+    _, bottom = upgrade_sections()
+    return max(0, bottom + 20 - SHOP_UPGRADE_VIEWPORT.bottom)
+
 def draw_upgrades_tab():
     global shop_upgrade_scroll
     shop_upgrade_scroll += (shop_upgrade_scroll_target - shop_upgrade_scroll) * 0.25
     screen.set_clip(SHOP_UPGRADE_VIEWPORT)
-    for i, item in enumerate(SHOP_UPGRADES):
-        card, button = card_rects(i, SHOP_UPGRADE_VIEWPORT, shop_upgrade_scroll)
-        if card.bottom < SHOP_UPGRADE_VIEWPORT.top or card.top > SHOP_UPGRADE_VIEWPORT.bottom:
-            continue
-        owned = globals()[item["flag"]]
-        locked = item["needs"] is not None and not globals()[item["needs"]]
-        if owned:
-            button_color, label = GREEN, "Owned"
-        elif locked:
-            button_color, label = DARK_RED, f"Needs {item['needs_name']}"
-        elif main_game_coins >= item["price"]:
-            button_color, label = BLUE, f"Buy - {item['price']}"
-        else:
-            button_color, label = DARK_RED, f"Need {item['price']}"
-        draw_shop_card(card, button, item["tag"], SHOP_ICONS[item["icon"]], item["name"], button_color, label)
+    g = globals()
+    sections, _ = upgrade_sections()
+    for heading, heading_y, placed in sections:
+        text = coin_font.render(heading, True, (255, 222, 95))
+        screen.blit(text, (placed[0][1].x, heading_y + 8))
+        pygame.draw.line(screen, (90, 96, 110), (placed[0][1].x + text.get_width() + 16, heading_y + 22),
+                         (WIDTH - placed[0][1].x, heading_y + 22), 2)
+        for item, card, button in placed:
+            if card.bottom < SHOP_UPGRADE_VIEWPORT.top or card.top > SHOP_UPGRADE_VIEWPORT.bottom:
+                continue
+            owned = g[item["flag"]]
+            if "key" in item:  # A gun add-on
+                if gun_addon == item["key"]:
+                    button_color, label = GREEN, "Equipped"
+                elif owned:
+                    button_color, label = BLUE, "Equip"
+                elif main_game_coins >= item["price"]:
+                    button_color, label = BLUE, f"Buy - {item['price']}"
+                else:
+                    button_color, label = DARK_RED, f"Need {item['price']}"
+                draw_shop_card(card, button, "ADD-ON", SHOP_ICONS[item["key"]], item["name"], button_color, label)
+                about = smaller_button_font.render(item["about"], True, (190, 196, 205))
+                if about.get_width() > card.width - 16:
+                    about = pygame.transform.smoothscale(about, (card.width - 16, about.get_height()))
+                screen.blit(about, about.get_rect(center=(card.centerx, card.y + 128)))
+                continue
+            locked = item["needs"] is not None and not g[item["needs"]]
+            if owned:
+                button_color, label = GREEN, "Owned"
+            elif locked:
+                button_color, label = DARK_RED, f"Needs {item['needs_name']}"
+            elif main_game_coins >= item["price"]:
+                button_color, label = BLUE, f"Buy - {item['price']}"
+            else:
+                button_color, label = DARK_RED, f"Need {item['price']}"
+            draw_shop_card(card, button, item["tag"], SHOP_ICONS[item["icon"]], item["name"], button_color, label)
     screen.set_clip(None)
-    draw_scrollbar(SHOP_UPGRADE_VIEWPORT, shop_upgrade_scroll, max_card_scroll(len(SHOP_UPGRADES), SHOP_UPGRADE_VIEWPORT))
+    draw_scrollbar(SHOP_UPGRADE_VIEWPORT, shop_upgrade_scroll, max_upgrade_scroll())
+
+def click_gun_addon(item):
+    """Buy an add-on (it's equipped straight away), or equip / unequip one you own. Only one at a time."""
+    global main_game_coins, coin_count, gun_addon, console_message, console_message_timer
+    g = globals()
+    if g[item["flag"]]:
+        gun_addon = None if gun_addon == item["key"] else item["key"]
+        console_message = f"{item['name']} {'equipped' if gun_addon else 'unequipped'}"
+    elif main_game_coins >= item["price"]:
+        main_game_coins -= item["price"]
+        coin_count = main_game_coins
+        g[item["flag"]] = g["main_game_" + item["flag"]] = True
+        gun_addon = item["key"]
+        console_message = f"Bought {item['name']}! It's equipped"
+        sounds.play("buy")
+    else:
+        return
+    console_message_timer = 2.5
 
 def buy_shop_upgrade(item):
     global main_game_coins, coin_count, shot_delay, console_message, console_message_timer
@@ -7024,11 +7098,11 @@ def buy_shop_upgrade(item):
 def handle_upgrades_tab_click(pos):
     if not SHOP_UPGRADE_VIEWPORT.collidepoint(pos):
         return
-    for i, item in enumerate(SHOP_UPGRADES):
-        _, button = card_rects(i, SHOP_UPGRADE_VIEWPORT, shop_upgrade_scroll)
-        if button.collidepoint(pos):
-            buy_shop_upgrade(item)
-            return
+    for _, _, placed in upgrade_sections()[0]:
+        for item, card, button in placed:
+            if button.collidepoint(pos):
+                click_gun_addon(item) if "key" in item else buy_shop_upgrade(item)
+                return
 
 # ---- Abilities tab: buy them here, and equip the ones you own ----
 ability_scroll = 0.0
@@ -7238,7 +7312,7 @@ def handle_hub_event(event):
     if event.type == pygame.MOUSEWHEEL:
         step = event.y * 80
         if hub_tab == "Upgrades":
-            shop_upgrade_scroll_target = max(0, min(max_card_scroll(len(SHOP_UPGRADES), SHOP_UPGRADE_VIEWPORT),
+            shop_upgrade_scroll_target = max(0, min(max_upgrade_scroll(),
                                                     shop_upgrade_scroll_target - step))
         elif hub_tab == "Abilities":
             ability_scroll_target = max(0, min(max_card_scroll(len(ABILITIES), ABILITY_VIEWPORT),
@@ -7633,6 +7707,12 @@ while running:
 
     screen.fill(BLACK)
     events = pygame.event.get()  # Only call this ONCE per frame
+    if (gun_addon == "full_auto" and pygame.mouse.get_pressed()[0] and not (start_screen or hub_open or settings_open)
+            and not game_over and not game_paused and not globals().get("spectating") and not console_open
+            and not admin_panel_open and not pause_menu_open and not enemy_menu_open and not block_menu_open
+            and sandbox_place is None and pygame.mouse.get_focused()
+            and not any(e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 for e in events)):
+        events.append(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pygame.mouse.get_pos(), auto=True))
 
     # Keep coins and the main-game copies in sync, and autosave the logged-in account when anything changes
     update_progress_and_autosave()
@@ -7688,7 +7768,7 @@ while running:
             continue
         # Block Defence: clicking the block opens its repair menu (instead of shooting)
         if (in_block_defence and not game_over and not game_paused and event.type == pygame.MOUSEBUTTONDOWN
-                and event.button == 1 and not console_open and not pause_menu_open
+                and event.button == 1 and not getattr(event, "auto", False) and not console_open and not pause_menu_open
                 and BLOCK_DEFENCE_BLOCK_RECT.move(-camera_x, -camera_y).collidepoint(pygame.mouse.get_pos())):
             open_block_menu()
             continue
