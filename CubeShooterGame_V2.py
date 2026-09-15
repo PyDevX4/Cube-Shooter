@@ -2195,12 +2195,7 @@ def run_console_command(text):
         jump_to_wave(int(compact[4:]))
         close_console_stack()
         return
-    boss_waves = {plan["boss"] + "boss": number for number, plan in WAVES.items() if plan.get("boss")}
-    if compact in boss_waves:  # redboss, greenboss, blueboss: straight to that boss fight
-        go_to_boss_fight(boss_waves[compact])
-        close_console_stack()
-        return
-    if compact == "purplebossbreakorbs":  # Break all 4 of the Purple Boss's orbs at once
+    if compact == "break":  # Break all 4 of the Purple Boss's orbs at once
         if purple_boss_break_orbs():
             close_console_stack()
         else:
