@@ -4458,6 +4458,8 @@ VIOLET_BOSS_SEGMENT = 26           # ...so a tentacle is about 360 px long when 
 VIOLET_BOSS_REACH_SPEED = 0.45     # How fast a tentacle reaches out (a share of the way each second): slow
 VIOLET_BOSS_PULL_BACK = 0.8        # How fast the ones pointing away curl back in
 VIOLET_BOSS_ARM_SPREAD = math.radians(75)   # Tentacles this close to your direction reach for you
+VIOLET_BOSS_WARN_TIME = 1.0        # 200-175: the paths light up for this long before the tentacles grow...
+VIOLET_BOSS_GROW_TIME = 1.4        # ...then they grow out along them over this long
 VIOLET_BOSS_SWING_SPEED = 1.1      # 200-175: how fast the stretched-out tentacles swing...
 VIOLET_BOSS_SWING_ARC = math.radians(50)   # ...and how far each way they swing
 
@@ -4478,12 +4480,15 @@ def violet_boss_arm_points(boss, k):
     to the barrier and swings side to side; before that they curl gently."""
     base = k * 2 * math.pi / VIOLET_BOSS_ARMS
     arm = boss["arms"][k]
-    if boss["phase"] == "sweep":
-        angle = base + math.sin(boss["swing"] * VIOLET_BOSS_SWING_SPEED + k * 0.35) * VIOLET_BOSS_SWING_ARC
+    if boss["phase"] in ("warn", "grow", "sweep"):
+        # Growing: straight out along the warning line. Sweeping: the same, swinging side to side.
+        swing = math.sin(boss["swing"] * VIOLET_BOSS_SWING_SPEED + k * 0.35) * VIOLET_BOSS_SWING_ARC if boss["phase"] == "sweep" else 0.0
+        angle = base + swing
+        grown = 1.0 if boss["phase"] == "sweep" else violet_boss_grown(boss)  # Short stubs while the warning shows
         length = violet_boss_arm_length(boss, angle)
         sx, sy = boss["x"] + math.cos(angle) * (BOSS_RADIUS - 6), boss["y"] + math.sin(angle) * (BOSS_RADIUS - 6)
-        step = (length - BOSS_RADIUS) / VIOLET_BOSS_SEGMENTS
-        wave = math.sin(boss["swing"] * VIOLET_BOSS_SWING_SPEED * 2 + k) * 0.06  # A little whip in the tentacle
+        step = (length - BOSS_RADIUS) / VIOLET_BOSS_SEGMENTS * grown
+        wave = math.sin(boss["swing"] * VIOLET_BOSS_SWING_SPEED * 2 + k) * 0.06 if boss["phase"] == "sweep" else 0.0
         points, x, y = [(sx, sy)], sx, sy
         for j in range(1, VIOLET_BOSS_SEGMENTS + 1):
             a = angle + wave * (j / VIOLET_BOSS_SEGMENTS)
@@ -4504,17 +4509,33 @@ def violet_boss_arm_points(boss, k):
         points.append((x, y))
     return points
 
+def violet_boss_grown(boss):
+    """How far out the tentacles are while they grow (0 = tucked in, 1 = all the way to the barrier)."""
+    if boss["phase"] == "warn":
+        return 0.06   # Pulled in, waiting to shoot out along the warning
+    if boss["phase"] != "grow":
+        return 1.0
+    return max(0.06, min(1.0, 1 - boss["timer"] / VIOLET_BOSS_GROW_TIME))
+
 def update_violet_boss(boss, dt):
-    """3 s wait, then 200-175: every tentacle stretches out to the barrier and sweeps back and forth.
-    The tentacles can't be shot - you have to hit him."""
+    """3 s wait, then 200-175: the paths light up, the tentacles grow out along them to the barrier, and once
+    they are all out they sweep back and forth. The tentacles can't be shot - you have to hit him."""
     boss["sway"] += dt
     boss["timer"] -= dt
     if boss["phase"] == "start":
         if boss["timer"] <= 0:
-            boss["phase"] = "sweep"
-            boss["shielded"] = False   # Now you can hurt him
+            boss["phase"], boss["timer"] = "warn", VIOLET_BOSS_WARN_TIME  # Where they are about to reach
+            boss["shielded"] = False   # He can be hurt from here on
             for arm in boss["arms"]:
                 arm["reach"] = 1.0
+        return
+    if boss["phase"] == "warn":
+        if boss["timer"] <= 0:
+            boss["phase"], boss["timer"] = "grow", VIOLET_BOSS_GROW_TIME
+        return
+    if boss["phase"] == "grow":
+        if boss["timer"] <= 0:
+            boss["phase"], boss["swing"] = "sweep", 0.0
         return
     if boss["phase"] == "sweep":
         boss["swing"] += dt
@@ -4536,7 +4557,25 @@ def violet_boss_take_bullet(boss, bullet):
     """While he sweeps, shots go past the tentacles and hit him. (Nothing else takes shots yet.)"""
     return False
 
+def draw_violet_boss_warning(boss):
+    """Where each tentacle is about to reach: a violet beam out to the barrier that fills up as it charges."""
+    charge = 1.0 if boss["phase"] == "grow" else 1 - max(0.0, boss["timer"]) / VIOLET_BOSS_WARN_TIME
+    pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 90)
+    layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    for k, arm in enumerate(boss["arms"]):
+        if not arm["alive"]:
+            continue
+        angle = k * 2 * math.pi / VIOLET_BOSS_ARMS
+        length = violet_boss_arm_length(boss, angle)
+        start = (boss["x"] + math.cos(angle) * (BOSS_RADIUS - 6) - camera_x, boss["y"] + math.sin(angle) * (BOSS_RADIUS - 6) - camera_y)
+        end = (boss["x"] + math.cos(angle) * length - camera_x, boss["y"] + math.sin(angle) * length - camera_y)
+        pygame.draw.line(layer, (170, 90, 255, int(60 + 70 * charge)), start, end, int(16 + 24 * charge))
+        pygame.draw.line(layer, (235, 210, 255, int(150 + 90 * pulse * charge)), start, end, 4)
+    screen.blit(layer, (0, 0))
+
 def draw_violet_boss_arms(boss, cx, cy):
+    if boss["phase"] in ("warn", "grow"):
+        draw_violet_boss_warning(boss)
     for k, arm in enumerate(boss["arms"]):
         base = k * 2 * math.pi / VIOLET_BOSS_ARMS
         if not arm["alive"]:
