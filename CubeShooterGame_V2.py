@@ -716,14 +716,128 @@ def create_halloween_surface(tile_size=128):
         surf.set_at((rng.randrange(tile_size), rng.randrange(tile_size)), rng.choice([(48, 58, 46), (120, 130, 110)]))
     return surf
 
+MAP_TILE = 512   # Ground tiles are this big (4x the old 128), so the ground repeats far less often
+
+def _wrap_blit(surf, piece, x, y, tile_size):
+    """Draw something at (x, y), repeated across the tile's edges so it still wraps seamlessly."""
+    for ox in (-tile_size, 0, tile_size):
+        for oy in (-tile_size, 0, tile_size):
+            surf.blit(piece, piece.get_rect(center=(x + ox, y + oy)))
+
+def _pebble(colour, radius, shade=None):
+    piece = pygame.Surface((radius * 2 + 4, radius * 2 + 4), pygame.SRCALPHA)
+    centre = (radius + 2, radius + 2)
+    pygame.draw.circle(piece, shade or tuple(max(0, c - 40) for c in colour), (centre[0] + 1, centre[1] + 2), radius)
+    pygame.draw.circle(piece, colour, centre, radius)
+    pygame.draw.circle(piece, tuple(min(255, c + 35) for c in colour), (centre[0] - radius // 3, centre[1] - radius // 3), max(1, radius // 3))
+    return piece
+
+def _tuft(colour, size):
+    piece = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
+    for k in range(5):
+        a = -math.pi / 2 + (k - 2) * 0.32
+        pygame.draw.line(piece, colour, (size, size * 1.6), (size + math.cos(a) * size * 0.8, size * 1.6 + math.sin(a) * size), 2)
+    return piece
+
+def big_map_tile(base, seed, decorate=None):
+    """Build a big ground tile out of the small seamless one: every piece is flipped or turned a different way,
+    then large soft patches and scattered details are laid over it, so the ground never looks like one small
+    picture repeating. Still seamless, because flips and quarter turns keep the edges matching."""
+    rng = random.Random(seed)
+    size = base.get_width()
+    surf = pygame.Surface((MAP_TILE, MAP_TILE))
+    for gy in range(MAP_TILE // size):
+        for gx in range(MAP_TILE // size):
+            piece = base
+            if rng.random() < 0.5:
+                piece = pygame.transform.flip(piece, True, False)
+            if rng.random() < 0.5:
+                piece = pygame.transform.flip(piece, False, True)
+            piece = pygame.transform.rotate(piece, rng.choice((0, 90, 180, 270)))
+            surf.blit(piece, (gx * size, gy * size))
+    patches = pygame.Surface((MAP_TILE, MAP_TILE), pygame.SRCALPHA)  # Big light and dark areas
+    for _ in range(26):  # Many soft, gentle ones instead of a few obvious blobs
+        x, y, radius = rng.randrange(MAP_TILE), rng.randrange(MAP_TILE), rng.randint(45, 150)
+        colour = rng.choice(((255, 255, 255, 10), (0, 0, 0, 13), (255, 255, 255, 6), (0, 0, 0, 8)))
+        for ox in (-MAP_TILE, 0, MAP_TILE):
+            for oy in (-MAP_TILE, 0, MAP_TILE):
+                pygame.draw.circle(patches, colour, (x + ox, y + oy), radius)
+    surf.blit(patches, (0, 0))
+    if decorate:
+        decorate(surf, rng)
+    return surf
+
+def _scatter(surf, rng, pieces, count):
+    for _ in range(count):
+        _wrap_blit(surf, rng.choice(pieces)(rng), rng.randrange(MAP_TILE), rng.randrange(MAP_TILE), MAP_TILE)
+
+def _flower(colour):
+    def make(rng):
+        piece = pygame.Surface((14, 14), pygame.SRCALPHA)
+        for k in range(5):
+            a = k * 2 * math.pi / 5
+            pygame.draw.circle(piece, colour, (7 + math.cos(a) * 3.2, 7 + math.sin(a) * 3.2), 2.4)
+        pygame.draw.circle(piece, (255, 230, 120), (7, 7), 1.8)
+        return piece
+    return make
+
+def decorate_grass(surf, rng):
+    _scatter(surf, rng, [lambda r: _tuft((70, 168, 62), r.randint(7, 12)), lambda r: _pebble((150, 150, 145), r.randint(3, 6)),
+                         _flower((255, 245, 250)), _flower((255, 190, 90)), _flower((190, 170, 255))], 46)
+
+def decorate_snow(surf, rng):
+    _scatter(surf, rng, [lambda r: _pebble((205, 212, 222), r.randint(4, 8)),
+                         lambda r: _tuft((186, 200, 214), r.randint(6, 10)),
+                         lambda r: _pebble((120, 126, 138), r.randint(3, 5))], 40)
+
+def decorate_sand(surf, rng):
+    _scatter(surf, rng, [lambda r: _pebble((198, 170, 116), r.randint(3, 7)),
+                         lambda r: _pebble((236, 214, 160), r.randint(4, 8)),
+                         lambda r: _tuft((186, 174, 96), r.randint(6, 11))], 38)
+
+def decorate_magma(surf, rng):
+    _scatter(surf, rng, [lambda r: _pebble((44, 38, 48), r.randint(5, 11)),
+                         lambda r: _pebble((255, 120, 30), r.randint(2, 4), (120, 30, 5))], 34)
+
+def decorate_moon(surf, rng):
+    _scatter(surf, rng, [lambda r: _pebble((160, 160, 166), r.randint(4, 9)),
+                         lambda r: _pebble((112, 112, 120), r.randint(6, 14))], 40)
+
+def decorate_cave(surf, rng):
+    _scatter(surf, rng, [lambda r: _pebble((96, 88, 82), r.randint(4, 10)),
+                         lambda r: _pebble((66, 60, 56), r.randint(6, 13))], 44)
+
+def decorate_wasteland(surf, rng):
+    _scatter(surf, rng, [lambda r: _pebble((150, 132, 102), r.randint(3, 8)),
+                         lambda r: _tuft((128, 118, 74), r.randint(7, 12)),
+                         lambda r: _pebble((92, 80, 64), r.randint(5, 10))], 42)
+
+def decorate_swamp(surf, rng):
+    _scatter(surf, rng, [lambda r: _tuft((96, 150, 60), r.randint(8, 14)),
+                         lambda r: _pebble((44, 68, 58), r.randint(6, 13)),
+                         lambda r: _pebble((120, 150, 70), r.randint(3, 5))], 44)
+
+def decorate_halloween(surf, rng):
+    def bat(r):
+        piece = pygame.Surface((22, 12), pygame.SRCALPHA)
+        pygame.draw.polygon(piece, (28, 24, 34), [(11, 8), (2, 3), (5, 7), (0, 10), (11, 10), (22, 10), (17, 7), (20, 3)])
+        return piece
+    _scatter(surf, rng, [lambda r: _pebble((80, 76, 70), r.randint(4, 9)), bat,
+                         lambda r: _tuft((86, 104, 72), r.randint(7, 12))], 40)
+
 MAP_NAMES = ["Grass", "Snow", "Sand", "Magma", "Moon", "Cave", "Wasteland", "Swamp", "Halloween"]
 HIDDEN_MAPS = ("Halloween",)   # Only admins and owners see these for now
 FREE_MAPS = ("Grass", "Snow", "Sand")
 MAP_PRICE = 500
-MAP_TEXTURES = {"Grass": grass_texture, "Snow": create_snow_surface(), "Sand": create_sand_surface(),
-                "Magma": create_magma_surface(), "Moon": create_moon_surface(), "Cave": create_cave_surface(),
-                "Wasteland": create_wasteland_surface(), "Swamp": create_swamp_surface(),
-                "Halloween": create_halloween_surface()}
+MAP_TEXTURES = {"Grass": big_map_tile(grass_texture, 101, decorate_grass),
+                "Snow": big_map_tile(create_snow_surface(), 102, decorate_snow),
+                "Sand": big_map_tile(create_sand_surface(), 103, decorate_sand),
+                "Magma": big_map_tile(create_magma_surface(), 104, decorate_magma),
+                "Moon": big_map_tile(create_moon_surface(), 105, decorate_moon),
+                "Cave": big_map_tile(create_cave_surface(), 106, decorate_cave),
+                "Wasteland": big_map_tile(create_wasteland_surface(), 107, decorate_wasteland),
+                "Swamp": big_map_tile(create_swamp_surface(), 108, decorate_swamp),
+                "Halloween": big_map_tile(create_halloween_surface(), 109, decorate_halloween)}
 MINIMAP_GROUND = {"Grass": (46, 96, 46, 230), "Snow": (170, 188, 205, 230), "Sand": (175, 145, 92, 230),
                   "Magma": (40, 30, 36, 230), "Moon": (140, 140, 146, 230), "Cave": (62, 56, 52, 230),
                   "Wasteland": (120, 100, 74, 230), "Swamp": (58, 78, 46, 230), "Halloween": (36, 44, 36, 230)}
@@ -6894,28 +7008,37 @@ def draw_gun(cx, cy, aim, skin, since_shot=99.0):
     (cx, cy) is the player's centre in world coordinates and `aim` where they are pointing."""
     hx, hy = cx - camera_x + math.cos(aim) * orbit_radius, cy - camera_y + math.sin(aim) * orbit_radius
     fx, fy = math.cos(aim), math.sin(aim)          # Forward, along the barrel
-    sx, sy = -fy, fx                               # Sideways
+    flip = -1 if fx < 0 else 1                     # Aiming left: mirror it so the grip still hangs downward
+    sx, sy = -fy * flip, fx * flip                 # Sideways
     accent = rainbow_color_cycle(pygame.time.get_ticks() / 1000.0, 2.0) if skin == "rainbow" else \
         SKIN_GLOWS.get(skin) or skin_colors.get(skin, WHITE)
     accent = tuple(int(c) for c in accent[:3])
     dark, mid, light = (26, 28, 36), (74, 80, 94), (150, 158, 176)
 
-    scale = 1.45  # A bit bigger than the cube's old gun ball, so it reads as a weapon
+    scale = 0.95  # Small enough to sit neatly in the cube's hand
 
     def at(forward, side):
         return (hx + fx * forward * scale + sx * side * scale, hy + fy * forward * scale + sy * side * scale)
 
-    pygame.draw.polygon(screen, (0, 0, 0, 90), [at(-12, 7), at(20, 7), at(20, -7), at(-12, -7)])  # Body shadow
-    pygame.draw.polygon(screen, dark, [at(-4, 5), at(-13, 12), at(-7, 14), at(2, 7)])             # Grip
-    pygame.draw.polygon(screen, mid, [at(-5, 6), at(-12, 11), at(-8, 12), at(0, 7)])
-    pygame.draw.polygon(screen, dark, [at(-12, -8), at(10, -8), at(10, 8), at(-12, 8)])           # Body
-    pygame.draw.polygon(screen, mid, [at(-10, -6), at(8, -6), at(8, 6), at(-10, 6)])
-    pygame.draw.polygon(screen, accent, [at(-6, -5), at(4, -5), at(4, -2), at(-6, -2)])           # Skin-coloured stripe
-    pygame.draw.polygon(screen, dark, [at(8, -5), at(26, -5), at(26, 5), at(8, 5)])               # Barrel
-    pygame.draw.polygon(screen, light, [at(9, -3), at(25, -3), at(25, 0), at(9, 0)])
-    pygame.draw.polygon(screen, dark, [at(24, -6), at(29, -6), at(29, 6), at(24, 6)])             # Muzzle
-    pygame.draw.circle(screen, accent, at(-1, 0), 3)                                             # Power cell
-    draw_muzzle_flash(*at(30, 0), (120, 200, 255), since_shot)
+    pygame.draw.polygon(screen, dark, [at(-3, 4), at(-11, 13), at(-5, 15), at(3, 6)])             # Grip
+    pygame.draw.polygon(screen, mid, [at(-4, 5), at(-10, 12), at(-6, 13), at(1, 6)])
+    pygame.draw.polygon(screen, (40, 44, 54), [at(-2, 5), at(2, 5), at(4, 11), at(0, 11)])        # Trigger guard
+    pygame.draw.polygon(screen, dark, [at(-11, -7), at(9, -7), at(9, 7), at(-11, 7)])             # Body
+    pygame.draw.polygon(screen, mid, [at(-9, -5), at(7, -5), at(7, 5), at(-9, 5)])
+    pygame.draw.polygon(screen, (96, 104, 120), [at(-11, -7), at(9, -7), at(9, -5), at(-11, -5)])  # Top rail
+    for vent in range(3):                                                                         # Vents along the body
+        vx = -6 + vent * 5
+        pygame.draw.polygon(screen, (34, 38, 48), [at(vx, -3), at(vx + 2, -3), at(vx + 2, 2), at(vx, 2)])
+    pygame.draw.polygon(screen, accent, [at(-8, -4), at(-2, -4), at(-2, -1), at(-8, -1)])          # Skin-coloured plate
+    pygame.draw.polygon(screen, dark, [at(-9, 5), at(-3, 5), at(-3, 10), at(-9, 10)])              # Magazine
+    pygame.draw.polygon(screen, (96, 104, 120), [at(-8, 6), at(-4, 6), at(-4, 9), at(-8, 9)])
+    pygame.draw.polygon(screen, dark, [at(9, -4), at(24, -4), at(24, 4), at(9, 4)])                # Barrel
+    pygame.draw.polygon(screen, light, [at(10, -2), at(23, -2), at(23, 0), at(10, 0)])
+    pygame.draw.polygon(screen, (40, 44, 54), [at(13, -6), at(16, -6), at(16, -4), at(13, -4)])    # Front sight
+    pygame.draw.polygon(screen, dark, [at(22, -5), at(27, -5), at(27, 5), at(22, 5)])              # Muzzle
+    pygame.draw.circle(screen, accent, at(25, 0), 2)
+    pygame.draw.circle(screen, accent, at(-1, 0), 2)                                              # Power cell
+    draw_muzzle_flash(*at(28, 0), (120, 200, 255), since_shot)
 
 def draw_remote_shockwave(cx, cy, radius):
     """Another player's shockwave, so you can see it coming."""
