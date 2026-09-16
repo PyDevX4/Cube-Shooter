@@ -3968,7 +3968,7 @@ def spawn_boss(kind):
     if kind == "violet":
         active_boss.update({"phase": "start", "timer": VIOLET_BOSS_START_WAIT, "events_done": [], "shielded": True,
                             "arms": [{"alive": True, "reach": 0.0} for _ in range(VIOLET_BOSS_ARMS)],
-                            "arm_hits": 0, "last_arm": None, "sway": 0.0})
+                            "arm_hits": 0, "last_arm": None, "sway": 0.0, "swing": 0.0})
     if kind == "yellow":
         active_boss.update({"slots": [1.0, 1.0, 1.0, 1.0], "spin": 0.0, "throw_timer": YELLOW_BOSS_THROW_EVERY,
                             "events_done": [], "event": None, "barrage_fired": 0, "barrage_timer": 0.0,
@@ -4458,47 +4458,66 @@ VIOLET_BOSS_SEGMENT = 26           # ...so a tentacle is about 360 px long when 
 VIOLET_BOSS_REACH_SPEED = 0.45     # How fast a tentacle reaches out (a share of the way each second): slow
 VIOLET_BOSS_PULL_BACK = 0.8        # How fast the ones pointing away curl back in
 VIOLET_BOSS_ARM_SPREAD = math.radians(75)   # Tentacles this close to your direction reach for you
-VIOLET_BOSS_HIT_DISTANCE = 20      # How close a shot has to pass to count as hitting a tentacle
-VIOLET_BOSS_ARM_SHOTS = 25         # Shots on the tentacles before one breaks off
+VIOLET_BOSS_SWING_SPEED = 1.1      # 200-175: how fast the stretched-out tentacles swing...
+VIOLET_BOSS_SWING_ARC = math.radians(50)   # ...and how far each way they swing
+
+def violet_boss_arm_length(boss, angle):
+    """How long a tentacle pointing this way can grow before its tip reaches the barrier."""
+    margin = 16
+    reach = math.hypot(MAP_WIDTH, MAP_HEIGHT)  # As far as the barrier lets it: no other limit
+    dx, dy = math.cos(angle), math.sin(angle)
+    for limit, d, pos in ((MAP_WIDTH - margin, dx, boss["x"]), (MAP_HEIGHT - margin, dy, boss["y"])):
+        if d > 1e-9:
+            reach = min(reach, (limit - pos) / d)
+        elif d < -1e-9:
+            reach = min(reach, (margin - pos) / d)
+    return max(VIOLET_BOSS_SEGMENT * 2, reach)
 
 def violet_boss_arm_points(boss, k):
-    """The joints of tentacle k, from the boss out to the tip: it curls while resting and straightens at you."""
+    """The joints of tentacle k, from the boss out to the tip. While he sweeps, every tentacle is straight out
+    to the barrier and swings side to side; before that they curl gently."""
     base = k * 2 * math.pi / VIOLET_BOSS_ARMS
-    sx, sy = boss["x"] + math.cos(base) * (BOSS_RADIUS - 6), boss["y"] + math.sin(base) * (BOSS_RADIUS - 6)
     arm = boss["arms"][k]
+    if boss["phase"] == "sweep":
+        angle = base + math.sin(boss["swing"] * VIOLET_BOSS_SWING_SPEED + k * 0.35) * VIOLET_BOSS_SWING_ARC
+        length = violet_boss_arm_length(boss, angle)
+        sx, sy = boss["x"] + math.cos(angle) * (BOSS_RADIUS - 6), boss["y"] + math.sin(angle) * (BOSS_RADIUS - 6)
+        step = (length - BOSS_RADIUS) / VIOLET_BOSS_SEGMENTS
+        wave = math.sin(boss["swing"] * VIOLET_BOSS_SWING_SPEED * 2 + k) * 0.06  # A little whip in the tentacle
+        points, x, y = [(sx, sy)], sx, sy
+        for j in range(1, VIOLET_BOSS_SEGMENTS + 1):
+            a = angle + wave * (j / VIOLET_BOSS_SEGMENTS)
+            x += math.cos(a) * step
+            y += math.sin(a) * step
+            points.append((x, y))
+        return points
+    sx, sy = boss["x"] + math.cos(base) * (BOSS_RADIUS - 6), boss["y"] + math.sin(base) * (BOSS_RADIUS - 6)
     tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
     to_player = math.atan2(ty + player_size / 2 - sy, tx + player_size / 2 - sx)
     points, x, y = [(sx, sy)], sx, sy
     for j in range(1, VIOLET_BOSS_SEGMENTS + 1):
         curl = math.sin(boss["sway"] * 1.2 + k * 1.7 - j * 0.4) * 0.3 + 0.13 * j / VIOLET_BOSS_SEGMENTS
         resting = base + curl * j * 0.3
-        angle = resting + (to_player - resting) * arm["reach"]  # Straightens toward you as it reaches
+        angle = resting + (to_player - resting) * arm["reach"]
         x += math.cos(angle) * VIOLET_BOSS_SEGMENT
         y += math.sin(angle) * VIOLET_BOSS_SEGMENT
         points.append((x, y))
     return points
 
 def update_violet_boss(boss, dt):
-    """3 s wait, then the tentacles nearest you slowly stretch out for you. He is shielded the whole time:
-    shoot the tentacles 25 times and the one you hit last breaks off."""
+    """3 s wait, then 200-175: every tentacle stretches out to the barrier and sweeps back and forth.
+    The tentacles can't be shot - you have to hit him."""
     boss["sway"] += dt
     boss["timer"] -= dt
     if boss["phase"] == "start":
         if boss["timer"] <= 0:
-            boss["phase"] = "reach"
+            boss["phase"] = "sweep"
+            boss["shielded"] = False   # Now you can hurt him
+            for arm in boss["arms"]:
+                arm["reach"] = 1.0
         return
-    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
-    to_player = math.atan2(ty + player_size / 2 - boss["y"], tx + player_size / 2 - boss["x"])
-    for k, arm in enumerate(boss["arms"]):
-        if not arm["alive"]:
-            arm["reach"] = 0.0
-            continue
-        base = k * 2 * math.pi / VIOLET_BOSS_ARMS
-        off = abs((base - to_player + math.pi) % (2 * math.pi) - math.pi)
-        if off <= VIOLET_BOSS_ARM_SPREAD:  # Pointing your way: reach out
-            arm["reach"] = min(1.0, arm["reach"] + VIOLET_BOSS_REACH_SPEED * dt)
-        else:
-            arm["reach"] = max(0.0, arm["reach"] - VIOLET_BOSS_PULL_BACK * dt)
+    if boss["phase"] == "sweep":
+        boss["swing"] += dt
 
 def violet_boss_tentacles_touch_player(boss):
     """Touching a tentacle kills you."""
@@ -4506,36 +4525,15 @@ def violet_boss_tentacles_touch_player(boss):
         return
     px, py = player_x + player_size / 2, player_y + player_size / 2
     for k, arm in enumerate(boss["arms"]):
-        if not arm["alive"] or arm["reach"] <= 0.01:
+        if not arm["alive"]:
             continue
-        if any(math.hypot(x - px, y - py) < player_size / 2 + 8 for x, y in violet_boss_arm_points(boss, k)[2:]):
+        joints = violet_boss_arm_points(boss, k)
+        if any(math.hypot(x - px, y - py) < player_size / 2 + 8 for x, y in joints[2:]):
             player_hit()
             return
 
 def violet_boss_take_bullet(boss, bullet):
-    """Shots on his tentacles count toward breaking one off. True if the shot was used up."""
-    if boss["phase"] == "start":
-        return False
-    bx, by = bullet["x"] + bullet_size / 2, bullet["y"] + bullet_size / 2
-    for k, arm in enumerate(boss["arms"]):
-        if not arm["alive"]:
-            continue
-        joints = violet_boss_arm_points(boss, k)
-        if not any(math.hypot(x - bx, y - by) < VIOLET_BOSS_HIT_DISTANCE for x, y in joints[1:]):
-            continue
-        boss["arm_hits"] += 1
-        boss["last_arm"] = k
-        spawn_death_effect(bx, by, "purple_mini", (210, 170, 255))
-        sounds.play("boss_hit", 0.6)
-        if boss["arm_hits"] >= VIOLET_BOSS_ARM_SHOTS:
-            arm["alive"] = False       # The one you hit last comes off
-            boss["arm_hits"] = 0
-            boss["phase"] = "broken"   # (Nothing after this yet)
-            tip_x, tip_y = joints[len(joints) * 2 // 3]
-            for _ in range(3):
-                spawn_death_effect(tip_x, tip_y, "purple_mini", (200, 160, 255))
-            sounds.play("tentacle_cut")
-        return True
+    """While he sweeps, shots go past the tentacles and hit him. (Nothing else takes shots yet.)"""
     return False
 
 def draw_violet_boss_arms(boss, cx, cy):
@@ -5788,9 +5786,6 @@ def draw_boss_health():
         total = TEAL_GHOST_ROUNDS if active_boss.get("ghost_swarm") else TEAL_SWARM_ROUNDS  # 30 at 100, 25 at 150
         rounds_left = total - active_boss["swarm_round"] + (1 if any(e.get("swarm") for e in teal_enemies) else 0)
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"Dodge the teals! ({max(0, min(total, rounds_left))} left)")
-    elif active_boss["kind"] == "violet" and active_boss.get("phase") in ("reach", "start"):
-        left = VIOLET_BOSS_ARM_SHOTS - active_boss["arm_hits"]
-        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - shoot the tentacles! ({left} left)")
     elif active_boss["kind"] == "pink" and active_boss.get("lines"):
         lines = active_boss["lines"]
         rounds_left = lines.get("rounds", PINK_LINES_ROUNDS) - lines["round"]
