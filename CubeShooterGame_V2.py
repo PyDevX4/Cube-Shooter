@@ -166,7 +166,9 @@ owned_skins = {
     "rust": False,
     "aquamarine": False,
     "solar": False,
-    "pumpkin": False
+    "pumpkin": False,
+    "metal": False,
+    "neon": False
 }
 
 skin_colors = {
@@ -188,13 +190,15 @@ skin_colors = {
     "aquamarine": (90, 240, 170),  # Greener aquamarine
     "solar": (255, 225, 70),       # The yellow enemy's orb
     "pumpkin": (255, 130, 25),     # Halloween skin: not in the Shop yet
+    "metal": (170, 178, 190),      # Brushed steel
+    "neon": (70, 245, 235),        # Glowing circuit lines
     # rainbow handled separately
     # galaxy handled separately
 }
 
 # List of skins in shop order
 shop_skins = ["white", "black", "red", "galaxy", "orange", "yellow", "green", "blue", "purple", "lava", "water", "rainbow",
-              "teal", "pink", "violet", "navy", "rust", "aquamarine", "solar", "pumpkin"]
+              "teal", "pink", "violet", "navy", "rust", "aquamarine", "solar", "pumpkin", "metal", "neon"]
 SKINS_NOT_IN_SHOP = ("white", "black", "pumpkin")  # Pumpkin is saved for Halloween (Give Everything still unlocks it)
 
 current_skin = "white"
@@ -685,15 +689,44 @@ def create_swamp_surface(tile_size=128):
         surf.set_at((rng.randrange(tile_size), rng.randrange(tile_size)), rng.choice([(44, 60, 36), (100, 120, 70)]))
     return surf
 
-MAP_NAMES = ["Grass", "Snow", "Sand", "Magma", "Moon", "Cave", "Wasteland", "Swamp"]
+def create_halloween_surface(tile_size=128):
+    """Halloween: cold dead grass under moonlight, with pumpkins, bones and old cobwebs."""
+    rng = random.Random(31)
+    surf = pygame.Surface((tile_size, tile_size))
+    surf.fill((32, 40, 34))
+    for _ in range(16):
+        _wrap_circle(surf, rng.choice([(38, 48, 40), (26, 34, 30), (44, 52, 42)]), rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(10, 24), tile_size)
+    for _ in range(3):
+        _wrap_crack(surf, rng, (24, 30, 26), tile_size, 2, steps=5)
+    for _ in range(3):  # Little pumpkins
+        x, y, r = rng.randrange(tile_size), rng.randrange(tile_size), rng.randint(6, 9)
+        _wrap_circle(surf, (196, 92, 16), x, y, r, tile_size)
+        _wrap_circle(surf, (236, 128, 26), x - 1, y - 1, r * 0.7, tile_size)
+        _wrap_circle(surf, (70, 120, 50), x, y - r, 2, tile_size)
+    for _ in range(4):  # Bones
+        x, y = rng.randrange(tile_size), rng.randrange(tile_size)
+        ang = rng.uniform(0, math.pi)
+        dx, dy = math.cos(ang) * 7, math.sin(ang) * 7
+        for ox in (-tile_size, 0, tile_size):
+            for oy in (-tile_size, 0, tile_size):
+                pygame.draw.line(surf, (208, 206, 190), (x - dx + ox, y - dy + oy), (x + dx + ox, y + dy + oy), 3)
+                pygame.draw.circle(surf, (216, 214, 200), (x - dx + ox, y - dy + oy), 2)
+                pygame.draw.circle(surf, (216, 214, 200), (x + dx + ox, y + dy + oy), 2)
+    for _ in range(90):
+        surf.set_at((rng.randrange(tile_size), rng.randrange(tile_size)), rng.choice([(48, 58, 46), (120, 130, 110)]))
+    return surf
+
+MAP_NAMES = ["Grass", "Snow", "Sand", "Magma", "Moon", "Cave", "Wasteland", "Swamp", "Halloween"]
+HIDDEN_MAPS = ("Halloween",)   # Only admins and owners see these for now
 FREE_MAPS = ("Grass", "Snow", "Sand")
 MAP_PRICE = 500
 MAP_TEXTURES = {"Grass": grass_texture, "Snow": create_snow_surface(), "Sand": create_sand_surface(),
                 "Magma": create_magma_surface(), "Moon": create_moon_surface(), "Cave": create_cave_surface(),
-                "Wasteland": create_wasteland_surface(), "Swamp": create_swamp_surface()}
+                "Wasteland": create_wasteland_surface(), "Swamp": create_swamp_surface(),
+                "Halloween": create_halloween_surface()}
 MINIMAP_GROUND = {"Grass": (46, 96, 46, 230), "Snow": (170, 188, 205, 230), "Sand": (175, 145, 92, 230),
                   "Magma": (40, 30, 36, 230), "Moon": (140, 140, 146, 230), "Cave": (62, 56, 52, 230),
-                  "Wasteland": (120, 100, 74, 230), "Swamp": (58, 78, 46, 230)}
+                  "Wasteland": (120, 100, 74, 230), "Swamp": (58, 78, 46, 230), "Halloween": (36, 44, 36, 230)}
 owned_maps = set(FREE_MAPS)
 selected_map = "Grass"
 
@@ -851,12 +884,53 @@ def create_pumpkin_surface(size=150):
                                             (size * 0.56, size * 0.68), (size * 0.44, size * 0.68), (size * 0.34, size * 0.82)])
     return surf
 
+def create_metal_skin_surface(size=150):
+    """Brushed steel plate with rivets and a bright diagonal sheen."""
+    rng = random.Random(77)
+    surf = pygame.Surface((size, size))
+    surf.fill((128, 134, 146))
+    for y in range(size):  # Brushed grain
+        shade = 118 + int(26 * math.sin(y * 0.7) * 0.5 + rng.uniform(-6, 6))
+        pygame.draw.line(surf, (shade, shade + 6, shade + 16), (0, y), (size, y))
+    sheen = pygame.Surface((size, size), pygame.SRCALPHA)
+    pygame.draw.polygon(sheen, (255, 255, 255, 60), [(0, size * 0.75), (size * 0.35, 0), (size * 0.6, 0), (size * 0.2, size)])
+    surf.blit(sheen, (0, 0))
+    pygame.draw.rect(surf, (86, 92, 104), surf.get_rect(), 8)
+    pygame.draw.rect(surf, (190, 198, 212), surf.get_rect().inflate(-16, -16), 3)
+    for x, y in ((18, 18), (size - 18, 18), (18, size - 18), (size - 18, size - 18)):  # Rivets
+        pygame.draw.circle(surf, (86, 92, 104), (x, y), 7)
+        pygame.draw.circle(surf, (205, 212, 225), (x, y), 5)
+        pygame.draw.circle(surf, (120, 128, 140), (x, y), 2)
+    return surf
+
+def create_neon_skin_surface(size=150):
+    """Dark panel with glowing circuit tracks running across it."""
+    rng = random.Random(91)
+    surf = pygame.Surface((size, size))
+    surf.fill((10, 14, 22))
+    for i in range(7):  # Circuit tracks
+        y = size * (i + 0.5) / 7
+        x = 0
+        while x < size:
+            run = rng.randint(14, 34)
+            pygame.draw.line(surf, (18, 60, 70), (x, y), (min(size, x + run), y), 7)
+            pygame.draw.line(surf, (70, 245, 235), (x, y), (min(size, x + run), y), 3)
+            x += run + rng.randint(6, 16)
+            if rng.random() < 0.5 and x < size:  # A branch going up or down
+                drop = rng.choice((-1, 1)) * rng.randint(10, 22)
+                pygame.draw.line(surf, (70, 245, 235), (x, y), (x, y + drop), 3)
+                pygame.draw.circle(surf, (190, 255, 250), (x, y + drop), 4)
+    return surf
+
 solar_texture = create_solar_surface()
+metal_skin_texture = create_metal_skin_surface()
+neon_skin_texture = create_neon_skin_surface()
 pumpkin_texture = create_pumpkin_surface()
 SKIN_TEXTURES = {"galaxy": galaxy_texture, "lava": lava_texture, "water": water_texture,
-                 "solar": solar_texture, "pumpkin": pumpkin_texture}
+                 "solar": solar_texture, "pumpkin": pumpkin_texture,
+                 "metal": metal_skin_texture, "neon": neon_skin_texture}
 SKIN_GLOWS = {"galaxy": (100, 150, 255), "lava": (255, 69, 0), "water": (0, 150, 255), "black": (110, 110, 130),
-              "solar": (255, 225, 70), "pumpkin": (255, 140, 30)}
+              "solar": (255, 225, 70), "pumpkin": (255, 140, 30), "metal": (190, 200, 215), "neon": (70, 245, 235)}
 
 # ---- Animated skins: little effects that stay on the cube's face (pre-drawn frames that loop) ----
 SKIN_ANIM_FRAMES = 40
@@ -877,6 +951,10 @@ def _make_skin_frames(skin):
         blobs = [(rng.uniform(10, size - 10), rng.uniform(10, size - 10), rng.uniform(8, 16), rng.uniform(0, 2 * math.pi)) for _ in range(5)]
     elif skin in ("solar", "pumpkin"):
         sparks = [(rng.uniform(0, 2 * math.pi), rng.uniform(0.3, 1.0)) for _ in range(9)]
+    elif skin == "metal":
+        glints = [(rng.uniform(0, 1), rng.uniform(0.6, 1.4)) for _ in range(3)]
+    elif skin == "neon":
+        pulses = [(rng.uniform(0, 1), rng.uniform(0, size)) for _ in range(6)]
     else:
         sparkles = [(rng.uniform(0, size), rng.uniform(0, size), rng.uniform(0, 1)) for _ in range(10)]
     for f in range(SKIN_ANIM_FRAMES):
@@ -927,6 +1005,25 @@ def _make_skin_frames(skin):
                 colour = (255, 235, 120) if skin == "solar" else (255, 170, 60)
                 pygame.draw.circle(surf, (*colour, 220), (x, y), 3)
                 pygame.draw.circle(surf, (255, 255, 235, 150), (x, y), 1.5)
+        elif skin == "metal":
+            # A bright sheen sweeping across the plate
+            surf.blit(base, (0, 0))
+            shine = pygame.Surface((size, size), pygame.SRCALPHA)
+            for start, speed in glints:
+                bx = -size * 0.5 + ((p * speed + start) % 1.0) * size * 2
+                pygame.draw.polygon(shine, (255, 255, 255, 55), [(bx, 0), (bx + 22, 0), (bx - 18, size), (bx - 40, size)])
+            surf.blit(shine, (0, 0))
+        elif skin == "neon":
+            # Light running along the circuit tracks, and the whole face breathing
+            surf.blit(base, (0, 0))
+            glow = pygame.Surface((size, size), pygame.SRCALPHA)
+            breath = 0.5 + 0.5 * math.sin(a)
+            for start, y in pulses:
+                x = ((p * 1.6 + start) % 1.0) * size
+                for k in range(6):
+                    pygame.draw.circle(glow, (70, 245, 235, int(160 * (1 - k / 6))), (x - k * 5, y), 5 - k * 0.6)
+            glow.fill((int(10 + 25 * breath), int(35 + 45 * breath), int(35 + 45 * breath), 0), special_flags=pygame.BLEND_RGBA_ADD)
+            surf.blit(glow, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
         else:
             surf.blit(base, (0, 0))
             # Waves sliding across the face
@@ -1415,7 +1512,8 @@ def draw_game_buttons():
         screen.blit(text, text.get_rect(center=rect.center))
 
 # ---- Shops ----
-SKIN_PRICES = {"white": 0, "black": 0, "rainbow": 1200, "galaxy": 1500, "lava": 1500, "water": 1500}  # Basic colours cost 800
+SKIN_PRICES = {"white": 0, "black": 0, "rainbow": 1200, "galaxy": 1500, "lava": 1500, "water": 1500,
+               "solar": 1200, "pumpkin": 1200, "metal": 1200, "neon": 1200}  # Basic colours cost 800
 SKIN_CARD_W, SKIN_CARD_H, SKIN_CARD_GAP, SKIN_COLUMNS = 220, 250, 26, 4
 
 def card_rects(i, viewport, scroll):
@@ -3633,6 +3731,7 @@ WAVES = {
     138: {"violet": 12, "red": 30, "green": 20, "blue": 15, "pink": 6}, 139: {"violet": 14, "teal": 12, "orange": 8, "yellow": 8},
     140: {"boss": "teal"},
     160: {"boss": "pink"},
+    180: {"boss": "violet"},
     # 141-159: every enemy type in mixed waves (never more than 100), building up to wave 160
     141: {"red": 30, "green": 20, "pink": 8}, 142: {"blue": 15, "teal": 10, "violet": 6},
     143: {"orange": 10, "yellow": 10, "red": 25}, 144: {"purple": 8, "pink": 10, "green": 25},
@@ -3695,6 +3794,8 @@ BOSSES = {
              "speed": 0.0, "minions": {}, "minimap": (70, 235, 220), "reward": 1500, "health": 200},
     "pink": {"name": "PINK BOSS", "color": (255, 105, 180), "title": ((255, 225, 240), (235, 70, 150)), "bar": (255, 120, 190),
              "speed": 0.0, "minions": {}, "minimap": (255, 130, 200), "reward": 2000, "health": 200},
+    "violet": {"name": "VIOLET BOSS", "color": (150, 95, 225), "title": ((235, 220, 255), (140, 80, 220)), "bar": (185, 140, 255),
+               "speed": 0.0, "minions": {}, "minimap": (195, 150, 255), "reward": 2500, "health": 200},
 }
 PINK_BOSS_START_WAIT = 3.0      # Waits this long at the start
 PINK_BOSS_AIM_TIME = 0.75       # Shows where he's going for this long...
@@ -3864,6 +3965,10 @@ def spawn_boss(kind):
         active_boss.update({"phase": "start", "timer": TEAL_BOSS_START_WAIT, "blink_phase": 0.0, "events_done": []})
     if kind == "pink":
         active_boss.update({"phase": "start", "timer": PINK_BOSS_START_WAIT, "events_done": [], "target": None})
+    if kind == "violet":
+        active_boss.update({"phase": "start", "timer": VIOLET_BOSS_START_WAIT, "events_done": [], "shielded": True,
+                            "arms": [{"alive": True, "reach": 0.0} for _ in range(VIOLET_BOSS_ARMS)],
+                            "arm_hits": 0, "last_arm": None, "sway": 0.0})
     if kind == "yellow":
         active_boss.update({"slots": [1.0, 1.0, 1.0, 1.0], "spin": 0.0, "throw_timer": YELLOW_BOSS_THROW_EVERY,
                             "events_done": [], "event": None, "barrage_fired": 0, "barrage_timer": 0.0,
@@ -4323,6 +4428,8 @@ def update_boss(dt):
             update_teal_boss(boss, dt)
         elif boss["kind"] == "pink":
             update_pink_boss(boss, dt)
+        elif boss["kind"] == "violet":
+            update_violet_boss(boss, dt)
         else:
             distance = math.hypot(tx - boss["x"], ty - boss["y"])
             if distance > 1:
@@ -4338,8 +4445,118 @@ def update_boss(dt):
         touching = False  # He lands right on you on purpose - only his explosion hurts
     if boss["kind"] == "pink" and boss["phase"] in ("gone", "exit", "return"):
         touching = False
+    if boss["kind"] == "violet":
+        violet_boss_tentacles_touch_player(boss)
     if touching and not game_over and not player_safe() and boss["grace"] == 0 and boss_push == [0.0, 0.0]:
         player_hit()
+
+# ---- Violet Boss (wave 180): shielded, and his tentacles reach out for you ----
+VIOLET_BOSS_START_WAIT = 3.0
+VIOLET_BOSS_ARMS = 8
+VIOLET_BOSS_SEGMENTS = 14          # Joints per tentacle
+VIOLET_BOSS_SEGMENT = 26           # ...so a tentacle is about 360 px long when it is stretched out
+VIOLET_BOSS_REACH_SPEED = 0.45     # How fast a tentacle reaches out (a share of the way each second): slow
+VIOLET_BOSS_PULL_BACK = 0.8        # How fast the ones pointing away curl back in
+VIOLET_BOSS_ARM_SPREAD = math.radians(75)   # Tentacles this close to your direction reach for you
+VIOLET_BOSS_HIT_DISTANCE = 20      # How close a shot has to pass to count as hitting a tentacle
+VIOLET_BOSS_ARM_SHOTS = 25         # Shots on the tentacles before one breaks off
+
+def violet_boss_arm_points(boss, k):
+    """The joints of tentacle k, from the boss out to the tip: it curls while resting and straightens at you."""
+    base = k * 2 * math.pi / VIOLET_BOSS_ARMS
+    sx, sy = boss["x"] + math.cos(base) * (BOSS_RADIUS - 6), boss["y"] + math.sin(base) * (BOSS_RADIUS - 6)
+    arm = boss["arms"][k]
+    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+    to_player = math.atan2(ty + player_size / 2 - sy, tx + player_size / 2 - sx)
+    points, x, y = [(sx, sy)], sx, sy
+    for j in range(1, VIOLET_BOSS_SEGMENTS + 1):
+        curl = math.sin(boss["sway"] * 1.2 + k * 1.7 - j * 0.4) * 0.3 + 0.13 * j / VIOLET_BOSS_SEGMENTS
+        resting = base + curl * j * 0.3
+        angle = resting + (to_player - resting) * arm["reach"]  # Straightens toward you as it reaches
+        x += math.cos(angle) * VIOLET_BOSS_SEGMENT
+        y += math.sin(angle) * VIOLET_BOSS_SEGMENT
+        points.append((x, y))
+    return points
+
+def update_violet_boss(boss, dt):
+    """3 s wait, then the tentacles nearest you slowly stretch out for you. He is shielded the whole time:
+    shoot the tentacles 25 times and the one you hit last breaks off."""
+    boss["sway"] += dt
+    boss["timer"] -= dt
+    if boss["phase"] == "start":
+        if boss["timer"] <= 0:
+            boss["phase"] = "reach"
+        return
+    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+    to_player = math.atan2(ty + player_size / 2 - boss["y"], tx + player_size / 2 - boss["x"])
+    for k, arm in enumerate(boss["arms"]):
+        if not arm["alive"]:
+            arm["reach"] = 0.0
+            continue
+        base = k * 2 * math.pi / VIOLET_BOSS_ARMS
+        off = abs((base - to_player + math.pi) % (2 * math.pi) - math.pi)
+        if off <= VIOLET_BOSS_ARM_SPREAD:  # Pointing your way: reach out
+            arm["reach"] = min(1.0, arm["reach"] + VIOLET_BOSS_REACH_SPEED * dt)
+        else:
+            arm["reach"] = max(0.0, arm["reach"] - VIOLET_BOSS_PULL_BACK * dt)
+
+def violet_boss_tentacles_touch_player(boss):
+    """Touching a tentacle kills you."""
+    if boss["phase"] == "start" or game_over or player_safe():
+        return
+    px, py = player_x + player_size / 2, player_y + player_size / 2
+    for k, arm in enumerate(boss["arms"]):
+        if not arm["alive"] or arm["reach"] <= 0.01:
+            continue
+        if any(math.hypot(x - px, y - py) < player_size / 2 + 8 for x, y in violet_boss_arm_points(boss, k)[2:]):
+            player_hit()
+            return
+
+def violet_boss_take_bullet(boss, bullet):
+    """Shots on his tentacles count toward breaking one off. True if the shot was used up."""
+    if boss["phase"] == "start":
+        return False
+    bx, by = bullet["x"] + bullet_size / 2, bullet["y"] + bullet_size / 2
+    for k, arm in enumerate(boss["arms"]):
+        if not arm["alive"]:
+            continue
+        joints = violet_boss_arm_points(boss, k)
+        if not any(math.hypot(x - bx, y - by) < VIOLET_BOSS_HIT_DISTANCE for x, y in joints[1:]):
+            continue
+        boss["arm_hits"] += 1
+        boss["last_arm"] = k
+        spawn_death_effect(bx, by, "purple_mini", (210, 170, 255))
+        sounds.play("boss_hit", 0.6)
+        if boss["arm_hits"] >= VIOLET_BOSS_ARM_SHOTS:
+            arm["alive"] = False       # The one you hit last comes off
+            boss["arm_hits"] = 0
+            boss["phase"] = "broken"   # (Nothing after this yet)
+            tip_x, tip_y = joints[len(joints) * 2 // 3]
+            for _ in range(3):
+                spawn_death_effect(tip_x, tip_y, "purple_mini", (200, 160, 255))
+            sounds.play("tentacle_cut")
+        return True
+    return False
+
+def draw_violet_boss_arms(boss, cx, cy):
+    for k, arm in enumerate(boss["arms"]):
+        base = k * 2 * math.pi / VIOLET_BOSS_ARMS
+        if not arm["alive"]:
+            pygame.draw.circle(screen, (110, 70, 160), (cx + math.cos(base) * (BOSS_RADIUS - 4),
+                                                        cy + math.sin(base) * (BOSS_RADIUS - 4)), 10)  # Stump
+            continue
+        joints = [(x - camera_x, y - camera_y) for x, y in violet_boss_arm_points(boss, k)]
+        for j, (x, y) in enumerate(joints):
+            width = 20 - 14 * j / VIOLET_BOSS_SEGMENTS
+            shade = j / VIOLET_BOSS_SEGMENTS
+            color = (int(110 + 90 * shade), int(60 + 90 * shade), int(180 + 60 * shade))
+            if arm["reach"] > 0.05:  # Brighter while it is reaching for you
+                color = (min(255, int(color[0] + 45 * arm["reach"])), color[1], min(255, int(color[2] + 20 * arm["reach"])))
+            if j > 0:
+                pygame.draw.line(screen, color, joints[j - 1], (x, y), max(3, int(width * 1.5)))
+            pygame.draw.circle(screen, color, (x, y), max(3, int(width * 0.75)))
+            if 2 <= j <= VIOLET_BOSS_SEGMENTS - 2 and j % 2 == 0:
+                pygame.draw.circle(screen, (235, 215, 255), (x, y), max(2, int(width * 0.3)))
 
 def purple_boss_orb_position(boss, orb):
     return (boss["x"] + math.cos(orb["angle"]) * PURPLE_ORB_DISTANCE, boss["y"] + math.sin(orb["angle"]) * PURPLE_ORB_DISTANCE)
@@ -4450,6 +4667,8 @@ def boss_take_bullet(bullet):
     """Let the current boss (and its parts) take a player shot. True if the shot hit something and is used up."""
     if active_boss is None:
         return False
+    if active_boss["kind"] == "violet" and violet_boss_take_bullet(active_boss, bullet):
+        return True
     if active_boss["kind"] == "purple":
         return purple_boss_take_bullet(active_boss, bullet)
     if active_boss["kind"] == "pink" and not pink_boss_visible(active_boss):
@@ -5052,6 +5271,11 @@ def hurt_boss(amount=1, force=False):
     global active_boss, kills
     boss = active_boss
     info = BOSSES[boss["kind"]]
+    if boss["kind"] == "violet" and not force:
+        if boss["shielded"]:  # His shield only comes down when the fight says so
+            boss["ripple"] = 0.25
+            sounds.play("shield_block", 0.6)
+            return
     if boss["kind"] == "blue" and not force:
         if boss["shielded"]:
             boss["ripple"] = 0.25  # The shot splashes off the shield
@@ -5270,6 +5494,8 @@ def draw_boss():
         if since < 0.12:
             draw_muzzle_flash(*end, (255, 90, 80), since)
         look_x, look_y = end
+    if boss["kind"] == "violet":
+        draw_violet_boss_arms(boss, cx, cy)
     if boss["kind"] == "purple":
         draw_purple_boss_strings(boss, cx, cy)
     if boss["kind"] == "orange":
@@ -5296,7 +5522,7 @@ def draw_boss():
     draw_eye(cx, cy, look_x, look_y, 32, BOSS_RADIUS * 0.3)
     if boss["kind"] == "purple":
         draw_purple_boss_parts(boss, cx, cy)
-    if boss["kind"] in ("blue", "purple", "orange", "yellow", "pink") and (boss["shielded"] or boss["ripple"] > 0):
+    if boss["kind"] in ("blue", "purple", "orange", "yellow", "pink", "violet") and (boss["shielded"] or boss["ripple"] > 0):
         draw_boss_shield(boss, cx, cy)
     if boss["flash"] > 0:
         flash = pygame.Surface((BOSS_RADIUS * 2, BOSS_RADIUS * 2), pygame.SRCALPHA)
@@ -5562,6 +5788,9 @@ def draw_boss_health():
         total = TEAL_GHOST_ROUNDS if active_boss.get("ghost_swarm") else TEAL_SWARM_ROUNDS  # 30 at 100, 25 at 150
         rounds_left = total - active_boss["swarm_round"] + (1 if any(e.get("swarm") for e in teal_enemies) else 0)
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"Dodge the teals! ({max(0, min(total, rounds_left))} left)")
+    elif active_boss["kind"] == "violet" and active_boss.get("phase") in ("reach", "start"):
+        left = VIOLET_BOSS_ARM_SHOTS - active_boss["arm_hits"]
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - shoot the tentacles! ({left} left)")
     elif active_boss["kind"] == "pink" and active_boss.get("lines"):
         lines = active_boss["lines"]
         rounds_left = lines.get("rounds", PINK_LINES_ROUNDS) - lines["round"]
@@ -6231,12 +6460,16 @@ MAP_SELECT_BUTTON = pygame.Rect(PLAY_CENTER_X - 20, HUB_VIEWPORT.y + 385, 170, 5
 MAP_MENU_PANEL = pygame.Rect(WIDTH // 2 - 580, 100, 1160, 720)
 MAP_MENU_CLOSE = pygame.Rect(MAP_MENU_PANEL.right - 70, MAP_MENU_PANEL.y + 18, 50, 50)
 
+def maps_you_can_see():
+    """Every map in the menu. Hidden ones (Halloween) only show for admins and owners until they go on sale."""
+    return [name for name in MAP_NAMES if name not in HIDDEN_MAPS or admin_unlocked or owner_unlocked]
+
 def map_card_rects():
     """(name, card, button) for every map in the map menu, 4 across."""
     cols, gap, w, h = 4, 20, 260, 280
     left = MAP_MENU_PANEL.centerx - (cols * w + (cols - 1) * gap) // 2
     rects = []
-    for i, name in enumerate(MAP_NAMES):
+    for i, name in enumerate(maps_you_can_see()):
         card = pygame.Rect(left + (i % cols) * (w + gap), MAP_MENU_PANEL.y + 110 + (i // cols) * (h + gap), w, h)
         rects.append((name, card, pygame.Rect(card.x + 20, card.bottom - 56, card.width - 40, 42)))
     return rects
@@ -6592,21 +6825,36 @@ def receive_player_state(name, data):
         bullets.append({"x": bx, "y": by, "dx": dx, "dy": dy, "sent": True, "owner": name, "age": 0})
 
 def draw_held_gun(cx, cy, aim, skin, since_shot=99.0):
-    """The little orbiting gun another player is holding, aiming where they aim."""
-    centre = (cx - camera_x + math.cos(aim) * orbit_radius, cy - camera_y + math.sin(aim) * orbit_radius)
-    barrel_end = (centre[0] + math.cos(aim) * 16, centre[1] + math.sin(aim) * 16)
-    pygame.draw.line(screen, (30, 32, 40), centre, barrel_end, 8)
-    pygame.draw.line(screen, (150, 155, 170), centre, barrel_end, 3)
-    if skin in SKIN_TEXTURES:
-        mini_surface = pygame.Surface((mini_size + 6, mini_size + 6), pygame.SRCALPHA)
-        pygame.draw.circle(mini_surface, (*SKIN_GLOWS.get(skin, WHITE), 60), (mini_size // 2 + 3, mini_size // 2 + 3), mini_size // 2 + 3)
-        mini_surface.blit(pygame.transform.smoothscale(animated_skin_texture(skin), (mini_size, mini_size)), (3, 3))
-        rotated = pygame.transform.rotate(mini_surface, -math.degrees(aim))
-        screen.blit(rotated, rotated.get_rect(center=centre))
-    else:
-        colour = rainbow_color_cycle(pygame.time.get_ticks() / 1000.0, 2.0) if skin == "rainbow" else skin_colors.get(skin, WHITE)
-        draw_orb(create_orb_sprite(colour[:3], mini_size // 2, glow=4), None, *centre)
-    draw_muzzle_flash(*barrel_end, (120, 200, 255), since_shot)
+    """Another player's gun, aiming where they aim."""
+    draw_gun(cx, cy, aim, skin, since_shot)
+
+def draw_gun(cx, cy, aim, skin, since_shot=99.0):
+    """The gun the player holds out: a barrel with a muzzle, a body and a grip, in the skin's colour.
+    (cx, cy) is the player's centre in world coordinates and `aim` where they are pointing."""
+    hx, hy = cx - camera_x + math.cos(aim) * orbit_radius, cy - camera_y + math.sin(aim) * orbit_radius
+    fx, fy = math.cos(aim), math.sin(aim)          # Forward, along the barrel
+    sx, sy = -fy, fx                               # Sideways
+    accent = rainbow_color_cycle(pygame.time.get_ticks() / 1000.0, 2.0) if skin == "rainbow" else \
+        SKIN_GLOWS.get(skin) or skin_colors.get(skin, WHITE)
+    accent = tuple(int(c) for c in accent[:3])
+    dark, mid, light = (26, 28, 36), (74, 80, 94), (150, 158, 176)
+
+    scale = 1.45  # A bit bigger than the cube's old gun ball, so it reads as a weapon
+
+    def at(forward, side):
+        return (hx + fx * forward * scale + sx * side * scale, hy + fy * forward * scale + sy * side * scale)
+
+    pygame.draw.polygon(screen, (0, 0, 0, 90), [at(-12, 7), at(20, 7), at(20, -7), at(-12, -7)])  # Body shadow
+    pygame.draw.polygon(screen, dark, [at(-4, 5), at(-13, 12), at(-7, 14), at(2, 7)])             # Grip
+    pygame.draw.polygon(screen, mid, [at(-5, 6), at(-12, 11), at(-8, 12), at(0, 7)])
+    pygame.draw.polygon(screen, dark, [at(-12, -8), at(10, -8), at(10, 8), at(-12, 8)])           # Body
+    pygame.draw.polygon(screen, mid, [at(-10, -6), at(8, -6), at(8, 6), at(-10, 6)])
+    pygame.draw.polygon(screen, accent, [at(-6, -5), at(4, -5), at(4, -2), at(-6, -2)])           # Skin-coloured stripe
+    pygame.draw.polygon(screen, dark, [at(8, -5), at(26, -5), at(26, 5), at(8, 5)])               # Barrel
+    pygame.draw.polygon(screen, light, [at(9, -3), at(25, -3), at(25, 0), at(9, 0)])
+    pygame.draw.polygon(screen, dark, [at(24, -6), at(29, -6), at(29, 6), at(24, 6)])             # Muzzle
+    pygame.draw.circle(screen, accent, at(-1, 0), 3)                                             # Power cell
+    draw_muzzle_flash(*at(30, 0), (120, 200, 255), since_shot)
 
 def draw_remote_shockwave(cx, cy, radius):
     """Another player's shockwave, so you can see it coming."""
@@ -9777,21 +10025,8 @@ while running:
         # Draw the orbiting mini gun: a barrel pointing where you aim, under a round gun body
         # (skipped on the frame the player dies, so it isn't frozen into the death snapshot)
         if not game_over and not spectating:
-            mini_center = (orbit_x - camera_x + mini_size // 2, orbit_y - camera_y + mini_size // 2)
-            barrel_end = (mini_center[0] + math.cos(last_rot_angle) * 16, mini_center[1] + math.sin(last_rot_angle) * 16)
-            pygame.draw.line(screen, (30, 32, 40), mini_center, barrel_end, 8)
-            pygame.draw.line(screen, (150, 155, 170), mini_center, barrel_end, 3)
-            if current_skin in SKIN_TEXTURES and owned_skins[current_skin]:
-                # Textured skins: the texture in a soft glow, turned to face the aim direction
-                mini_surface = pygame.Surface((mini_size + 6, mini_size + 6), pygame.SRCALPHA)
-                pygame.draw.circle(mini_surface, (*SKIN_GLOWS[current_skin], 60), (mini_size // 2 + 3, mini_size // 2 + 3), mini_size // 2 + 3)
-                mini_surface.blit(pygame.transform.smoothscale(animated_skin_texture(current_skin), (mini_size, mini_size)), (3, 3))
-                rotated_mini = pygame.transform.rotate(mini_surface, -math.degrees(last_rot_angle))
-                screen.blit(rotated_mini, rotated_mini.get_rect(center=mini_center))
-            else:
-                # Color skins: a small shaded orb in the skin color
-                draw_orb(create_orb_sprite(mini_color[:3], mini_size // 2, glow=4), None, *mini_center)
-            draw_muzzle_flash(*barrel_end, (120, 200, 255), pygame.time.get_ticks() / 1000 - last_shot_time)
+            draw_gun(player_x + player_size / 2, player_y + player_size / 2, last_rot_angle, current_skin,
+                     pygame.time.get_ticks() / 1000 - last_shot_time)
 
         # Draw coins: golden orbs with a ground shadow (freshly dropped coins hop above their shadow)
         for coin in coins:
