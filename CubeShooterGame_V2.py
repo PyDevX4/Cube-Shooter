@@ -2167,7 +2167,10 @@ def respawn_all_players(announce=False):
     """respawn command: bring back every dead player - you, and in multiplayer everyone who is spectating."""
     global game_over, player_x, player_y, console_message, console_message_timer
     revived = False
-    if globals().get("spectating"):
+    if in_pvp and (globals().get("spectating") or game_over):
+        pvp_respawn_me()  # PVP: back at your own corner
+        revived = True
+    elif globals().get("spectating"):
         respawn_from_spectating()
         revived = True
     elif game_over and not (start_screen or hub_open):
@@ -2356,11 +2359,7 @@ def run_console_command(text):
         return
     if compact == "keys":
         coin_cheat_enabled = kill_cheat_enabled = no_death_cheat_enabled = True
-        console_message, console_message_timer = "Shortcut keys on! L +1000 coins, K kill all, M invincible", 3.5
-        close_console_stack()
-        return
-    if compact == "respawn":
-        respawn_all_players(announce=True)
+        console_message, console_message_timer = "Shortcut keys on! L +1000 coins, K kill all, M invincible, P respawn", 3.5
         close_console_stack()
         return
     if compact.startswith("wave") and compact[4:].isdigit() and int(compact[4:]) >= 1:
@@ -6515,8 +6514,11 @@ def send_player_state(dt):
     collect_new_shots()
     shots = net_shot_outbox[:]
     net_shot_outbox.clear()
-    net.relay({"k": "p", "x": round(player_x, 1), "y": round(player_y, 1), "a": round(last_rot_angle, 3),
-               "s": current_skin, "d": bool(game_over or spectating), "b": shots})
+    update = {"k": "p", "x": round(player_x, 1), "y": round(player_y, 1), "a": round(last_rot_angle, 3),
+              "s": current_skin, "d": bool(game_over or spectating), "b": shots}
+    if in_pvp:  # Your clones, so the others can see and shoot them
+        update["h"] = [[round(h["x"], 1), round(h["y"], 1), round(h["angle"], 2)] for h in helpers] if helpers_active else []
+    net.relay(update)
 
 def receive_player_state(name, data):
     now = time.monotonic()
@@ -6527,7 +6529,8 @@ def receive_player_state(name, data):
     else:
         player["from_x"], player["from_y"] = player["x"], player["y"]  # Glide on from wherever it's drawn now
     player.update({"to_x": x, "to_y": y, "since": now, "a": float(data.get("a", 0)),
-                   "skin": str(data.get("s", "white")), "dead": bool(data.get("d"))})
+                   "skin": str(data.get("s", "white")), "dead": bool(data.get("d")),
+                   "helpers": [[float(v) for v in clone[:3]] for clone in (data.get("h") or [])[:4]]})
     for shot in data.get("b", [])[:20]:
         bx, by, dx, dy = (float(v) for v in shot[:4])
         # Already "sent" so it isn't passed on again; its owner is who fired it
@@ -6560,6 +6563,8 @@ def draw_remote_players():
         if not on_screen(sx + player_size / 2, sy + player_size / 2, 120):
             continue
         draw_player_cube(sx, sy, face, SKIN_GLOWS.get(skin, color), player.get("a", 0))
+        for clone in player.get("helpers") or []:  # Their clones, in their skin
+            draw_player_cube(clone[0] - camera_x, clone[1] - camera_y, face, SKIN_GLOWS.get(skin, color), clone[2], size=helper_size)
         tag = smaller_button_font.render(name, True, WHITE)
         box = tag.get_rect(midbottom=(sx + player_size / 2, sy - 10)).inflate(12, 4)
         pygame.draw.rect(screen, (20, 24, 32), box, border_radius=6)
@@ -6666,6 +6671,15 @@ def receive_world_message(name, data):
     if kind == "respawn":
         respawn_all_players()
         return
+    if kind == "pvphit" and in_pvp:
+        pvp_killed_by_someone()
+        return
+    if kind == "pvpclone" and in_pvp:
+        index = int(data.get("i", -1))
+        if 0 <= index < len(helpers):
+            spawn_death_effect(helpers[index]["x"] + helper_size / 2, helpers[index]["y"] + helper_size / 2, "green")
+            helpers.pop(index)
+        return
     if kind == "pvp" and name == net.lobby.get("host") and net_role() == "guest":
         apply_pvp_settings(data["s"])
         pvp_apply_state(data)
@@ -6695,6 +6709,7 @@ pvp_settings_timer = 0.0
 pvp_send_timer = 0.0
 pvp_state = {"round": 1, "phase": "fight", "time_left": 300.0, "wins": {}, "winner": None, "timer": 0.0, "fight_time": 0.0}
 pvp_banner = None              # {"text", "timer"}
+pvp_shockwave_hit = set()      # Players this shockwave has already caught
 
 def pvp_first_to():
     """The First to # number, or None when that setting is off."""
@@ -6765,17 +6780,46 @@ def pvp_slide_past_walls(old_x, old_y, new_x, new_y):
     return x, y
 
 def pvp_bullet_hits_player(bullet):
-    """Another player's shot hitting you kills you. Your own shots vanish when they reach someone (their game decides)."""
+    """Another player's shot hitting you kills you - unless your shield is in the way. Your own shots vanish
+    when they reach another player or one of their clones (their game decides who dies)."""
     rect = pygame.Rect(bullet["x"], bullet["y"], bullet_size, bullet_size)
+    bx, by = bullet["x"] + bullet_size / 2, bullet["y"] + bullet_size / 2
     if bullet.get("owner"):
-        if not game_over and not player_safe() and pvp_state["phase"] == "fight" and \
-                rect.colliderect(pygame.Rect(player_x, player_y, player_size, player_size)):
+        if shield_active and shield_blocks(bx, by, bullet_size / 2):
+            spawn_shot_clash(bx, by)
+            sounds.play("shield_block", 0.6)
+            return True
+        if (not game_over and not player_safe() and pvp_state["phase"] == "fight"
+                and rect.colliderect(pygame.Rect(player_x, player_y, player_size, player_size))):
             player_hit()
             sounds.play("player_death")
             return True
         return False
-    return any(not p.get("dead") and rect.colliderect(pygame.Rect(p["x"], p["y"], player_size, player_size))
-               for p in remote_players.values())
+    for name, player in remote_players.items():
+        if not player.get("dead") and rect.colliderect(pygame.Rect(player["x"], player["y"], player_size, player_size)):
+            return True
+        for i, clone in enumerate(player.get("helpers") or []):
+            if rect.colliderect(pygame.Rect(clone[0], clone[1], helper_size, helper_size)):
+                spawn_death_effect(clone[0] + helper_size / 2, clone[1] + helper_size / 2, "green")
+                net.relay({"k": "pvpclone", "i": i}, to=name)  # Their game removes it
+                return True
+    return False
+
+def pvp_shockwave_catches_players(radius):
+    """Your shockwave reaching another player kills them (their game does it when the message arrives)."""
+    cx, cy = player_x + player_size / 2, player_y + player_size / 2
+    for name, player in remote_players.items():
+        if player.get("dead") or name in pvp_shockwave_hit:
+            continue
+        if math.hypot(player["x"] + player_size / 2 - cx, player["y"] + player_size / 2 - cy) < radius + player_size / 2:
+            pvp_shockwave_hit.add(name)
+            net.relay({"k": "pvphit"}, to=name)
+
+def pvp_killed_by_someone():
+    """Someone's shockwave caught you."""
+    if in_pvp and not game_over and not player_safe() and pvp_state["phase"] == "fight":
+        player_hit()
+        sounds.play("player_death")
 
 def pvp_spawn_point(name):
     players = sorted(net.lobby["players"]) if net.lobby else [name]
@@ -8439,6 +8483,8 @@ while running:
                 select_ability_slot({pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_KP1: 0, pygame.K_KP2: 1, pygame.K_KP3: 2}[event.key])
             elif event.key == pygame.K_m and no_death_cheat_enabled:
                 invincible = not invincible  # Toggle invincibility
+            elif event.key == pygame.K_p and kill_cheat_enabled and not in_menu:
+                respawn_all_players(announce=True)  # Shortcut key: bring everyone back
             elif event.key == pygame.K_k and kill_cheat_enabled:
                 # Kill all enemies (they all burst apart)
                 for kind, group in dict_enemy_groups():
@@ -8627,6 +8673,7 @@ while running:
         if has_shockwave and equipped_ability == 'shockwave' and event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not (in_shooting_range and shooting_range_editor_mode):
             if shockwave_cooldown <= 0:
                 shockwave_active = True
+                pvp_shockwave_hit.clear()
                 shockwave_timer = 0.0
                 shockwave_cooldown = shockwave_cooldown_time
                 spawn_death_effect(player_x + player_size / 2, player_y + player_size / 2, "purple", (190, 90, 255))
@@ -8874,6 +8921,8 @@ while running:
             # Shockwave logic - kill enemies inside the expanding circle
             if shockwave_active:
                 player_center = (player_x + player_size // 2, player_y + player_size // 2)
+                if in_pvp:
+                    pvp_shockwave_catches_players(shockwave_radius)
                 # Kill red enemies inside shockwave
                 for i in reversed(range(len(red_enemies))):
                     ex, ey = red_enemies[i]
@@ -9509,8 +9558,10 @@ while running:
                 closest_enemy = None
                 closest_distance = float('inf')
                 
-                # Check all enemy types
-                for enemy in red_enemies + green_enemies + blue_enemies + purple_enemies:
+                # Check all enemy types (in PVP they go for the other players instead)
+                targets = ([(p["x"], p["y"]) for p in remote_players.values() if not p.get("dead")] if in_pvp
+                           else red_enemies + green_enemies + blue_enemies + purple_enemies)
+                for enemy in targets:
                     enemy_center_x = enemy[0] + player_size // 2
                     enemy_center_y = enemy[1] + player_size // 2
                     distance = math.hypot(helper_center_x - enemy_center_x, helper_center_y - enemy_center_y)
