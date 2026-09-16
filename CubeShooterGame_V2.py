@@ -6498,15 +6498,30 @@ def maps_you_can_see():
     """Every map in the menu. Hidden ones (Halloween) only show for admins and owners until they go on sale."""
     return [name for name in MAP_NAMES if name not in HIDDEN_MAPS or admin_unlocked or owner_unlocked]
 
+MAP_MENU_VIEWPORT = pygame.Rect(MAP_MENU_PANEL.x + 6, MAP_MENU_PANEL.y + 96, MAP_MENU_PANEL.width - 12, MAP_MENU_PANEL.height - 110)
+map_menu_scroll = 0.0
+map_menu_scroll_target = 0.0
+
 def map_card_rects():
-    """(name, card, button) for every map in the map menu, 4 across."""
+    """(name, card, button) for every map in the map menu, 4 across, moved up by however far it is scrolled."""
     cols, gap, w, h = 4, 20, 260, 280
     left = MAP_MENU_PANEL.centerx - (cols * w + (cols - 1) * gap) // 2
     rects = []
     for i, name in enumerate(maps_you_can_see()):
-        card = pygame.Rect(left + (i % cols) * (w + gap), MAP_MENU_PANEL.y + 110 + (i // cols) * (h + gap), w, h)
+        card = pygame.Rect(left + (i % cols) * (w + gap),
+                           MAP_MENU_VIEWPORT.y + 14 + (i // cols) * (h + gap) - round(map_menu_scroll), w, h)
         rects.append((name, card, pygame.Rect(card.x + 20, card.bottom - 56, card.width - 40, 42)))
     return rects
+
+def max_map_scroll():
+    """How far the map menu can scroll (0 when every map already fits)."""
+    rows = math.ceil(len(maps_you_can_see()) / 4)
+    content = 14 + rows * (280 + 20) - 20 + 14
+    return max(0, content - MAP_MENU_VIEWPORT.height)
+
+def scroll_map_menu(step):
+    global map_menu_scroll_target
+    map_menu_scroll_target = max(0, min(max_map_scroll(), map_menu_scroll_target - step))
 
 def draw_map_menu():
     """The map menu: every map with a picture. Pick one you own, or buy one for 500 coins."""
@@ -6523,7 +6538,12 @@ def draw_map_menu():
     x_text = button_font.render("X", True, BLACK)
     screen.blit(x_text, x_text.get_rect(center=MAP_MENU_CLOSE.center))
     guest = multiplayer_guest()
+    global map_menu_scroll
+    map_menu_scroll += (map_menu_scroll_target - map_menu_scroll) * 0.25
+    screen.set_clip(MAP_MENU_VIEWPORT)
     for name, card, button in map_card_rects():
+        if card.bottom < MAP_MENU_VIEWPORT.top or card.top > MAP_MENU_VIEWPORT.bottom:
+            continue
         owned = name in owned_maps
         draw_panel(card, highlight=name == selected_map)
         picture = pygame.Surface((card.width - 30, 150))
@@ -6551,6 +6571,13 @@ def draw_map_menu():
         draw_button(button, color)
         button_text = small_button_font.render(text, True, BLACK)
         screen.blit(button_text, button_text.get_rect(center=button.center))
+    screen.set_clip(None)
+    if max_map_scroll() > 0:  # Scrollbar down the right edge of the panel
+        track = pygame.Rect(MAP_MENU_PANEL.right - 22, MAP_MENU_VIEWPORT.y + 8, 7, MAP_MENU_VIEWPORT.height - 16)
+        pygame.draw.rect(screen, (40, 44, 50), track, border_radius=4)
+        thumb_h = max(40, track.height * MAP_MENU_VIEWPORT.height / (MAP_MENU_VIEWPORT.height + max_map_scroll()))
+        thumb_y = track.y + (track.height - thumb_h) * min(1.0, max(0.0, map_menu_scroll / max_map_scroll()))
+        pygame.draw.rect(screen, (215, 220, 228), (track.x, thumb_y, track.width, thumb_h), border_radius=4)
 
 def handle_map_menu_click(pos):
     """Pick an owned map (the host picks in multiplayer), buy a locked one, or close."""
@@ -6559,7 +6586,7 @@ def handle_map_menu_click(pos):
         map_menu_open = False
         return
     for name, card, button in map_card_rects():
-        if not card.collidepoint(pos):
+        if not card.collidepoint(pos) or not MAP_MENU_VIEWPORT.collidepoint(pos):
             continue
         if name in owned_maps:
             if not multiplayer_guest():
@@ -7867,6 +7894,7 @@ def handle_play_tab_click(pos):
         return
     if MAP_SELECT_BUTTON.collidepoint(pos):
         map_menu_open = True  # Guests can look (and buy), the host picks
+        globals()["map_menu_scroll"] = globals()["map_menu_scroll_target"] = 0.0
         return
     if multiplayer_guest():
         return  # The host chooses and starts
@@ -8296,6 +8324,9 @@ def draw_hub():
 def handle_hub_event(event):
     global hub_open, start_screen, hub_tab, map_menu_open
     global shop_upgrade_scroll_target, ability_scroll_target, locker_scroll_target
+    if event.type == pygame.MOUSEWHEEL and hub_tab == "Play" and map_menu_open:
+        scroll_map_menu(event.y * 80)
+        return
     if event.type == pygame.MOUSEWHEEL:
         step = event.y * 80
         if hub_tab == "Upgrades":
