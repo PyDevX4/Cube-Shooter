@@ -71,6 +71,7 @@ class Session(object):
         self.expires_at = time.time() + int(auth.get("expires_in", 3600)) - 60
         self.name = ""
         self.is_admin = False  # Set in Supabase (players.is_admin) - players can't change it themselves
+        self.is_owner = False  # players.is_owner: the owner account (the console bar and its commands)
         self.lock = threading.Lock()
         self.on_new_refresh_token = None  # Called with the new token each time it changes (for "Remember me")
 
@@ -90,10 +91,12 @@ def username_taken(username):
 
 
 def _load_row(session):
-    try:
-        rows = _request("GET", "/rest/v1/players?id=eq.%s&select=username,progress,is_admin" % session.user_id, token=session.token())
-    except ServerError:  # The is_admin column hasn't been added yet (supabase_setup.sql): nobody is an admin
-        rows = _request("GET", "/rest/v1/players?id=eq.%s&select=username,progress" % session.user_id, token=session.token())
+    for columns in ("username,progress,is_admin,is_owner", "username,progress,is_admin", "username,progress"):
+        try:  # Older databases may not have the is_admin / is_owner columns yet (see supabase_setup.sql)
+            rows = _request("GET", "/rest/v1/players?id=eq.%s&select=%s" % (session.user_id, columns), token=session.token())
+            break
+        except ServerError:
+            rows = []
     return rows[0] if rows else None
 
 
@@ -140,6 +143,7 @@ def _open(session, typed_name):
         row = {"username": name, "progress": {}}
     session.name = row["username"]
     session.is_admin = bool(row.get("is_admin"))
+    session.is_owner = bool(row.get("is_owner"))
     return session, row.get("progress") or {}
 
 

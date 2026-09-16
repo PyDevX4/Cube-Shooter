@@ -56,6 +56,8 @@ grant execute on function public.delete_my_account() to authenticated;
 -- Admin accounts: set is_admin to true on your own row in Table Editor -> players.
 -- Players can only change their username and progress, never is_admin (so nobody can make themselves an admin).
 alter table public.players add column if not exists is_admin boolean not null default false;
+-- The owner account (you): the ` console bar and its commands. Set is_owner to true on your own row.
+alter table public.players add column if not exists is_owner boolean not null default false;
 revoke insert, update on public.players from authenticated, anon;
 grant insert (id, username, progress) on public.players to authenticated;
 grant update (username, progress, updated_at) on public.players to authenticated;

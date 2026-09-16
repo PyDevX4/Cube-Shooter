@@ -116,7 +116,9 @@ main_game_owned_skins = {
     "violet": False,
     "navy": False,
     "rust": False,
-    "aquamarine": False
+    "aquamarine": False,
+    "solar": False,
+    "pumpkin": False
 }  # Store owned skins from main game mode
 # Store upgrade states from main game mode
 main_game_has_gun_upgrade = False
@@ -162,7 +164,9 @@ owned_skins = {
     "violet": False,
     "navy": False,
     "rust": False,
-    "aquamarine": False
+    "aquamarine": False,
+    "solar": False,
+    "pumpkin": False
 }
 
 skin_colors = {
@@ -182,13 +186,16 @@ skin_colors = {
     "navy": (30, 50, 140),      # Navy blue, rust and aquamarine: colours of the next enemies
     "rust": (125, 30, 18),         # Dark red rust
     "aquamarine": (90, 240, 170),  # Greener aquamarine
+    "solar": (255, 225, 70),       # The yellow enemy's orb
+    "pumpkin": (255, 130, 25),     # Halloween skin: not in the Shop yet
     # rainbow handled separately
     # galaxy handled separately
 }
 
 # List of skins in shop order
 shop_skins = ["white", "black", "red", "galaxy", "orange", "yellow", "green", "blue", "purple", "lava", "water", "rainbow",
-              "teal", "pink", "violet", "navy", "rust", "aquamarine"]
+              "teal", "pink", "violet", "navy", "rust", "aquamarine", "solar", "pumpkin"]
+SKINS_NOT_IN_SHOP = ("white", "black", "pumpkin")  # Pumpkin is saved for Halloween (Give Everything still unlocks it)
 
 current_skin = "white"
 
@@ -821,8 +828,35 @@ def draw_orb(orb, shadow, cx, cy):
     screen.blit(orb, (cx - orb.get_width() // 2, cy - orb.get_height() // 2))
 
 # Skins that use a texture instead of a flat color, and the glow color for skins that need a custom one
-SKIN_TEXTURES = {"galaxy": galaxy_texture, "lava": lava_texture, "water": water_texture}
-SKIN_GLOWS = {"galaxy": (100, 150, 255), "lava": (255, 69, 0), "water": (0, 150, 255), "black": (110, 110, 130)}
+def create_solar_surface(size=150):
+    """The yellow enemy's orb, as a skin: a blazing yellow core on a dark face."""
+    surf = pygame.Surface((size, size))
+    surf.fill((26, 20, 8))
+    centre = (size / 2, size / 2)
+    for radius, colour in ((size * 0.48, (60, 44, 10)), (size * 0.38, (120, 88, 14)), (size * 0.3, (210, 160, 25)),
+                           (size * 0.22, (255, 220, 70)), (size * 0.13, (255, 248, 200))):
+        pygame.draw.circle(surf, colour, centre, radius)
+    return surf
+
+def create_pumpkin_surface(size=150):
+    """Halloween: a carved pumpkin face glowing from inside."""
+    surf = pygame.Surface((size, size))
+    surf.fill((208, 96, 12))
+    for i in range(5):  # Ribs
+        x = size * (i + 0.5) / 5
+        pygame.draw.ellipse(surf, (236, 124, 22), (x - size * 0.09, -2, size * 0.18, size + 4))
+    pygame.draw.polygon(surf, (60, 22, 4), [(size * 0.2, size * 0.46), (size * 0.4, size * 0.46), (size * 0.3, size * 0.24)])
+    pygame.draw.polygon(surf, (60, 22, 4), [(size * 0.6, size * 0.46), (size * 0.8, size * 0.46), (size * 0.7, size * 0.24)])
+    pygame.draw.polygon(surf, (60, 22, 4), [(size * 0.24, size * 0.62), (size * 0.76, size * 0.62), (size * 0.66, size * 0.82),
+                                            (size * 0.56, size * 0.68), (size * 0.44, size * 0.68), (size * 0.34, size * 0.82)])
+    return surf
+
+solar_texture = create_solar_surface()
+pumpkin_texture = create_pumpkin_surface()
+SKIN_TEXTURES = {"galaxy": galaxy_texture, "lava": lava_texture, "water": water_texture,
+                 "solar": solar_texture, "pumpkin": pumpkin_texture}
+SKIN_GLOWS = {"galaxy": (100, 150, 255), "lava": (255, 69, 0), "water": (0, 150, 255), "black": (110, 110, 130),
+              "solar": (255, 225, 70), "pumpkin": (255, 140, 30)}
 
 # ---- Animated skins: little effects that stay on the cube's face (pre-drawn frames that loop) ----
 SKIN_ANIM_FRAMES = 40
@@ -841,6 +875,8 @@ def _make_skin_frames(skin):
     elif skin == "lava":
         embers = [(rng.uniform(4, size - 4), rng.uniform(0, 1), rng.uniform(0.6, 1.4), rng.uniform(1.5, 3)) for _ in range(12)]
         blobs = [(rng.uniform(10, size - 10), rng.uniform(10, size - 10), rng.uniform(8, 16), rng.uniform(0, 2 * math.pi)) for _ in range(5)]
+    elif skin in ("solar", "pumpkin"):
+        sparks = [(rng.uniform(0, 2 * math.pi), rng.uniform(0.3, 1.0)) for _ in range(9)]
     else:
         sparkles = [(rng.uniform(0, size), rng.uniform(0, size), rng.uniform(0, 1)) for _ in range(10)]
     for f in range(SKIN_ANIM_FRAMES):
@@ -873,6 +909,24 @@ def _make_skin_frames(skin):
                 ey = size - k * size
                 ex = x + math.sin(a * 2 + x) * 3
                 pygame.draw.circle(surf, (255, int(200 - 120 * k), 40, int(255 * (1 - k))), (ex, ey), r * (1 - 0.5 * k))
+        elif skin in ("solar", "pumpkin"):
+            # The orb burns brighter and dimmer, with little sparks spinning around it
+            surf.blit(base, (0, 0))
+            pulse = 0.5 + 0.5 * math.sin(a)
+            heat = pygame.Surface((size, size), pygame.SRCALPHA)
+            glow_colour = (90, 70, 10) if skin == "solar" else (70, 34, 4)
+            pygame.draw.circle(heat, (int(glow_colour[0] * (0.6 + 0.8 * pulse)), int(glow_colour[1] * (0.6 + 0.8 * pulse)),
+                                      int(glow_colour[2] * (0.6 + 0.8 * pulse)), 255), (size / 2, size / 2), size * (0.3 + 0.06 * pulse))
+            surf.blit(heat, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+            if skin == "solar":
+                pygame.draw.circle(surf, (255, 250, 220, int(160 + 90 * pulse)), (size / 2, size / 2), size * (0.12 + 0.03 * pulse))
+            for phase, speed in sparks:  # Sparks orbiting the core, like the yellow enemy's orb
+                ang = phase + a * speed
+                radius = size * (0.34 + 0.04 * math.sin(a * 2 + phase))
+                x, y = size / 2 + math.cos(ang) * radius, size / 2 + math.sin(ang) * radius
+                colour = (255, 235, 120) if skin == "solar" else (255, 170, 60)
+                pygame.draw.circle(surf, (*colour, 220), (x, y), 3)
+                pygame.draw.circle(surf, (255, 255, 235, 150), (x, y), 1.5)
         else:
             surf.blit(base, (0, 0))
             # Waves sliding across the face
@@ -1708,7 +1762,7 @@ ABILITIES = [("freeze", "Freeze", (150, 220, 255), 1750), ("shield", "Shield", (
              ("shockwave", "Shockwave", (255, 140, 60), 2750)]
 ABILITY_ICON_SIZE = 84
 ability_icon_cache = {}
-DAILY_SKIN_POOL = [skin for skin in shop_skins if skin not in ("white", "black")]
+DAILY_SKIN_POOL = [skin for skin in shop_skins if skin not in SKINS_NOT_IN_SHOP]
 GUN_SHOT_DELAYS = [0.5, 0.43, 0.36, 0.29, 0.22, 0.15]  # Time between shots for gun level 0-5 (5 = the old max)
 MAGNET_RANGES = [0, 120, 140, 160, 180, 200]  # Coin pull distance for magnet level 0-5 (5 = the old max)
 
@@ -1891,7 +1945,7 @@ def log_out():
     if online_session is not None:
         cube_online.log_out(online_session)
         online_session = None
-    globals()["admin_unlocked"] = False
+    globals()["admin_unlocked"] = globals()["owner_unlocked"] = False
     close_console_stack()
     set_play_multiplayer(False)
     net.close()
@@ -1980,7 +2034,8 @@ def online_attempt(create):
         login_message_ok = False
         return
     online_session = session
-    globals()["admin_unlocked"] = session.is_admin
+    globals()["admin_unlocked"] = session.is_admin or session.is_owner
+    globals()["owner_unlocked"] = session.is_owner
     login_message_ok = True
     log_in_as({"name": session.name, "progress": progress}, message)
 
@@ -2158,11 +2213,11 @@ console_anim = 0.0        # 0 = hidden, 1 = fully dropped down
 admin_code_open = False   # The "Enter code" box you get after typing admin
 admin_code_input = ""
 admin_panel_open = False
-admin_unlocked = False    # True while logged in to an admin account (players.is_admin in Supabase): the ` console works
+admin_unlocked = False    # True while logged in to an admin account (players.is_admin in Supabase): the Z admin menu
+owner_unlocked = False    # True on the owner account (players.is_owner): the ` console bar and its commands
 CONSOLE_BAR = pygame.Rect(WIDTH // 2 - 380, 0, 760, 74)
-ADMIN_GIVE_BUTTON = pygame.Rect(WIDTH // 2 - 170, 420, 340, 60)
-ADMIN_SHOP_BUTTON = pygame.Rect(WIDTH // 2 - 170, 492, 340, 60)
-ADMIN_CLOSE_BUTTON = pygame.Rect(WIDTH // 2 - 170, 564, 340, 60)
+ADMIN_GIVE_BUTTON = pygame.Rect(WIDTH // 2 - 170, 430, 340, 60)
+ADMIN_CLOSE_BUTTON = pygame.Rect(WIDTH // 2 - 170, 510, 340, 60)
 
 def respawn_all_players(announce=False):
     """respawn command: bring back every dead player - you, and in multiplayer everyone who is spectating."""
@@ -2354,8 +2409,8 @@ def run_console_command(text):
     global coin_cheat_enabled, kill_cheat_enabled, no_death_cheat_enabled
     command = text.strip().lower()
     compact = command.replace(" ", "")
-    if not admin_unlocked:
-        console_message, console_message_timer = "Commands are for admin accounts only", 3.0
+    if not owner_unlocked:
+        console_message, console_message_timer = "Commands are for the owner account only", 3.0
         console_input = ""
         return
     if compact == "keys":
@@ -2399,12 +2454,6 @@ def admin_give_everything():
     main_game_coins = coin_count = max(main_game_coins, 99999)
     g["sandbox_entry_coins"] = max(g["sandbox_entry_coins"], 99999)  # Still works from inside the Sandbox
     console_message, console_message_timer = "Admin: everything unlocked", 3.0
-
-def admin_change_shop():
-    """Reroll today's daily Shop for everyone on this PC (still resets at midnight)."""
-    global console_message, console_message_timer
-    cube_accounts.reroll_daily(save_data)
-    console_message, console_message_timer = "Admin: daily Shop changed", 3.0
 
 def draw_console_bar():
     """The typing bar that drops down from the top of the screen and stays there."""
@@ -2459,14 +2508,13 @@ def draw_admin_panel():
     shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     shade.fill((0, 0, 0, 180))
     screen.blit(shade, (0, 0))
-    panel = pygame.Rect(WIDTH // 2 - 260, 250, 520, 420)
+    panel = pygame.Rect(WIDTH // 2 - 260, 260, 520, 340)
     draw_panel(panel)
     title = get_bubble_text("ADMIN", 64, (255, 215, 130), (255, 120, 40))
     screen.blit(title, title.get_rect(center=(WIDTH // 2, panel.y + 62)))
     subtitle = small_button_font.render("These change things for real", True, (205, 210, 216))
     screen.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, panel.y + 128)))
     for rect, label, color in ((ADMIN_GIVE_BUTTON, "Give Everything", BLUE),
-                               (ADMIN_SHOP_BUTTON, "Change Shop", BLUE),
                                (ADMIN_CLOSE_BUTTON, "Close", RED)):
         draw_button(rect, color)
         text = button_font.render(label, True, BLACK)
@@ -6593,6 +6641,9 @@ def draw_remote_players():
             color = skin_colors.get(skin, WHITE)
         face = animated_skin_texture(skin) if skin in SKIN_TEXTURES else color
         sx, sy = player["x"] - camera_x, player["y"] - camera_y
+        for clone in player.get("helpers") or []:  # Their clones, in their skin (they run off on their own)
+            if on_screen(clone[0] - camera_x, clone[1] - camera_y, 60):
+                draw_player_cube(clone[0] - camera_x, clone[1] - camera_y, face, SKIN_GLOWS.get(skin, color), clone[2], size=helper_size)
         if not on_screen(sx + player_size / 2, sy + player_size / 2, 120):
             continue
         if player.get("shockwave", 0) > 4:
@@ -6600,8 +6651,6 @@ def draw_remote_players():
         draw_player_cube(sx, sy, face, SKIN_GLOWS.get(skin, color), player.get("a", 0))
         draw_held_gun(player["x"] + player_size / 2, player["y"] + player_size / 2, player.get("a", 0),
                       skin, player.get("last_shot", 99))  # Their gun, aiming where they aim
-        for clone in player.get("helpers") or []:  # Their clones, in their skin
-            draw_player_cube(clone[0] - camera_x, clone[1] - camera_y, face, SKIN_GLOWS.get(skin, color), clone[2], size=helper_size)
         if player.get("ice", 0) > 0:  # Frozen solid by someone's Freeze
             draw_ice_block(sx + player_size / 2, sy + player_size / 2, player_size + 10, 0.2, int(player["x"]))
         if player.get("shield"):
@@ -8144,6 +8193,39 @@ def spawn_purple():
     purple_mini_circles.append([[0, 0, k * math.pi / 2] for k in range(4)])
     update_purple_minis(len(purple_enemies) - 1)
 
+aimbot_on = False  # Shortcut key J: every shot you fire steers onto the nearest target
+
+def aimbot_target(x, y):
+    """The nearest thing a bullet at (x, y) should hit: an enemy, a boss, or another player in PVP."""
+    best, best_gap = None, 1e18
+    spots = []
+    for group in (red_enemies, green_enemies, blue_enemies, purple_enemies):
+        spots += [(e[0] + player_size / 2, e[1] + player_size / 2) for e in group]
+    for _, group in dict_enemy_groups():
+        spots += [(e["x"] + player_size / 2, e["y"] + player_size / 2) for e in group]
+    if active_boss is not None and not (active_boss["kind"] == "teal" and not teal_boss_visible(active_boss)):
+        spots.append((active_boss["x"], active_boss["y"]))
+    if in_pvp:
+        spots += [(p["x"] + player_size / 2, p["y"] + player_size / 2)
+                  for p in remote_players.values() if not p.get("dead")]
+    for sx, sy in spots:
+        gap = math.hypot(sx - x, sy - y)
+        if gap < best_gap:
+            best, best_gap = (sx, sy), gap
+    return best
+
+def steer_bullets_to_targets():
+    """Aimbot: keep every shot of yours pointed straight at whatever is closest, so it can't miss."""
+    for bullet in bullets:
+        if bullet.get("owner"):
+            continue
+        target = aimbot_target(bullet["x"], bullet["y"])
+        if target is None:
+            continue
+        speed = math.hypot(bullet["dx"], bullet["dy"]) or 10
+        angle = math.atan2(target[1] - bullet["y"], target[0] - bullet["x"])
+        bullet["dx"], bullet["dy"] = math.cos(angle) * speed, math.sin(angle) * speed
+
 def active_gun_addon():
     """The add-on that's working right now (PVP with no upgrades turns them off)."""
     return None if pvp_no_upgrades_active() else gun_addon
@@ -8391,7 +8473,8 @@ if _remembered_online is not None:
     try:
         show_login_status("Logging in...")
         online_session, _progress = cube_online.resume(_remembered_online[1])
-        admin_unlocked = online_session.is_admin
+        admin_unlocked = online_session.is_admin or online_session.is_owner
+        owner_unlocked = online_session.is_owner
         login_remember = True
         log_in_as({"name": online_session.name, "progress": newest_progress(online_session, _progress)},
                   f"Welcome back, {online_session.name}!")
@@ -8463,8 +8546,8 @@ while running:
 
         # Code console: ` drops the typing bar down from the top, on any screen or game mode
         if event.type == pygame.KEYDOWN and (event.key == pygame.K_BACKQUOTE or event.unicode == "`"):
-            if not admin_unlocked:
-                continue  # Not an admin account: ` does nothing
+            if not owner_unlocked:
+                continue  # Only the owner account gets the console bar
             if console_open or admin_code_open or admin_panel_open:
                 close_console_stack()
             else:
@@ -8514,8 +8597,6 @@ while running:
                 pos = pygame.mouse.get_pos()
                 if ADMIN_GIVE_BUTTON.collidepoint(pos):
                     admin_give_everything()
-                elif ADMIN_SHOP_BUTTON.collidepoint(pos):
-                    admin_change_shop()
                 elif ADMIN_CLOSE_BUTTON.collidepoint(pos):
                     close_console_stack()
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -8562,6 +8643,9 @@ while running:
                 select_ability_slot({pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_KP1: 0, pygame.K_KP2: 1, pygame.K_KP3: 2}[event.key])
             elif event.key == pygame.K_m and no_death_cheat_enabled:
                 invincible = not invincible  # Toggle invincibility
+            elif event.key == pygame.K_j and kill_cheat_enabled:
+                aimbot_on = not aimbot_on
+                console_message, console_message_timer = "Aimbot %s" % ("ON" if aimbot_on else "OFF"), 2.0
             elif event.key == pygame.K_p and kill_cheat_enabled and not in_menu:
                 respawn_all_players(announce=True)  # Shortcut key: bring everyone back
             elif event.key == pygame.K_k and kill_cheat_enabled:
@@ -8721,13 +8805,11 @@ while running:
                 # Start cooldown
                 teleport_cooldown = teleport_cooldown_time
         # Freeze ability (disabled in editor mode)
-        if has_freeze and equipped_ability == 'freeze' and event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not (in_shooting_range and shooting_range_editor_mode):
+        if has_freeze and equipped_ability == 'freeze' and not in_pvp and event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not (in_shooting_range and shooting_range_editor_mode):
             if freeze_cooldown <= 0:
                 freeze_active = True
                 freeze_timer = 0.0
                 freeze_cooldown = freeze_cooldown_time
-                if in_pvp:
-                    net.relay({"k": "pvpfreeze", "t": freeze_duration})  # Everyone else freezes solid
         # Helpers ability (disabled in editor mode)
         if has_helpers and equipped_ability == 'helpers' and event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not (in_shooting_range and shooting_range_editor_mode):
             if helpers_cooldown <= 0:
@@ -9057,6 +9139,8 @@ while running:
                         kills += 1
 
             collect_new_shots()
+            if aimbot_on:
+                steer_bullets_to_targets()
             bullets_to_remove = []
             for i, bullet in enumerate(bullets):
                 bullet["x"] += bullet["dx"]
