@@ -1644,17 +1644,17 @@ def shield_blocks(wx, wy, extra=0):
     off_centre = (math.atan2(dy, dx) - last_rot_angle + math.pi) % (2 * math.pi) - math.pi
     return abs(off_centre) <= SHIELD_ARC / 2 + extra / max(distance, 1)
 
-def draw_shield():
+def draw_shield(at=None, aim=None, flicker=True):
     """The shield: glowing plate with energy ribs and bright rims, a spark running along its edge,
-    flickering as it is about to run out."""
+    flickering as it is about to run out. at/aim draw another player's shield instead of yours."""
     t = pygame.time.get_ticks() / 1000
-    if shield_timer > shield_max_duration * 0.75 and int(t * 18) % 2:
+    if flicker and shield_timer > shield_max_duration * 0.75 and int(t * 18) % 2:
         return  # Flicker when it is nearly spent
     pulse = (math.sin(t * 6) + 1) / 2
     size = int((SHIELD_RADIUS + SHIELD_THICKNESS + 24) * 2)
     c = size / 2
     surf = pygame.Surface((size, size), pygame.SRCALPHA)
-    start = last_rot_angle - SHIELD_ARC / 2
+    start = (last_rot_angle if aim is None else aim) - SHIELD_ARC / 2
     steps = 28
 
     def arc(radius):
@@ -1672,7 +1672,8 @@ def draw_shield():
     spark = outer[int((t * 1.6) % 1.0 * steps)]
     pygame.draw.circle(surf, (120, 210, 255, 120), spark, 8)
     pygame.draw.circle(surf, (255, 255, 255, 240), spark, 4)
-    screen.blit(surf, (player_x - camera_x + player_size / 2 - c, player_y - camera_y + player_size / 2 - c))
+    cx, cy = (player_x + player_size / 2, player_y + player_size / 2) if at is None else at
+    screen.blit(surf, (cx - camera_x - c, cy - camera_y - c))
 
 # ---- Accounts and saving ----
 UPGRADE_FLAGS = ["has_gun_upgrade", "has_gun_upgrade_1", "has_gun_upgrade_2", "has_gun_upgrade_3",
@@ -5566,7 +5567,7 @@ sandbox_logo_cache = {}
 
 def shrunk_map():
     """True when the barrier is smaller than the whole map: Barrier Shrink, or a Sandbox with a smaller barrier."""
-    return in_storm_survival or (in_shooting_range and sandbox_barrier < 0.999)
+    return in_storm_survival or (in_shooting_range and sandbox_barrier < 0.999) or (in_pvp and pvp_barrier < 0.999)
 
 def apply_sandbox_barrier():
     global storm_survival_map_width, storm_survival_map_height
@@ -6515,7 +6516,10 @@ def send_player_state(dt):
     shots = net_shot_outbox[:]
     net_shot_outbox.clear()
     update = {"k": "p", "x": round(player_x, 1), "y": round(player_y, 1), "a": round(last_rot_angle, 3),
-              "s": current_skin, "d": bool(game_over or spectating), "b": shots}
+              "s": current_skin, "d": bool(game_over or spectating), "b": shots,
+              "sh": bool(shield_active), "sw": round(shockwave_radius, 1) if shockwave_active else 0,
+              "fz": bool(freeze_active), "ice": max(0.0, round(pvp_frozen_left(), 2)),
+              "ls": round(pygame.time.get_ticks() / 1000 - last_shot_time, 2)}
     if in_pvp:  # Your clones, so the others can see and shoot them
         update["h"] = [[round(h["x"], 1), round(h["y"], 1), round(h["angle"], 2)] for h in helpers] if helpers_active else []
     net.relay(update)
@@ -6530,11 +6534,40 @@ def receive_player_state(name, data):
         player["from_x"], player["from_y"] = player["x"], player["y"]  # Glide on from wherever it's drawn now
     player.update({"to_x": x, "to_y": y, "since": now, "a": float(data.get("a", 0)),
                    "skin": str(data.get("s", "white")), "dead": bool(data.get("d")),
-                   "helpers": [[float(v) for v in clone[:3]] for clone in (data.get("h") or [])[:4]]})
+                   "helpers": [[float(v) for v in clone[:3]] for clone in (data.get("h") or [])[:4]],
+                   "shield": bool(data.get("sh")), "shockwave": float(data.get("sw") or 0),
+                   "freezing": bool(data.get("fz")), "ice": float(data.get("ice") or 0),
+                   "last_shot": float(data.get("ls") or 99)})
     for shot in data.get("b", [])[:20]:
         bx, by, dx, dy = (float(v) for v in shot[:4])
         # Already "sent" so it isn't passed on again; its owner is who fired it
         bullets.append({"x": bx, "y": by, "dx": dx, "dy": dy, "sent": True, "owner": name, "age": 0})
+
+def draw_held_gun(cx, cy, aim, skin, since_shot=99.0):
+    """The little orbiting gun another player is holding, aiming where they aim."""
+    centre = (cx - camera_x + math.cos(aim) * orbit_radius, cy - camera_y + math.sin(aim) * orbit_radius)
+    barrel_end = (centre[0] + math.cos(aim) * 16, centre[1] + math.sin(aim) * 16)
+    pygame.draw.line(screen, (30, 32, 40), centre, barrel_end, 8)
+    pygame.draw.line(screen, (150, 155, 170), centre, barrel_end, 3)
+    if skin in SKIN_TEXTURES:
+        mini_surface = pygame.Surface((mini_size + 6, mini_size + 6), pygame.SRCALPHA)
+        pygame.draw.circle(mini_surface, (*SKIN_GLOWS.get(skin, WHITE), 60), (mini_size // 2 + 3, mini_size // 2 + 3), mini_size // 2 + 3)
+        mini_surface.blit(pygame.transform.smoothscale(animated_skin_texture(skin), (mini_size, mini_size)), (3, 3))
+        rotated = pygame.transform.rotate(mini_surface, -math.degrees(aim))
+        screen.blit(rotated, rotated.get_rect(center=centre))
+    else:
+        colour = rainbow_color_cycle(pygame.time.get_ticks() / 1000.0, 2.0) if skin == "rainbow" else skin_colors.get(skin, WHITE)
+        draw_orb(create_orb_sprite(colour[:3], mini_size // 2, glow=4), None, *centre)
+    draw_muzzle_flash(*barrel_end, (120, 200, 255), since_shot)
+
+def draw_remote_shockwave(cx, cy, radius):
+    """Another player's shockwave, so you can see it coming."""
+    layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    centre = (cx - camera_x, cy - camera_y)
+    pygame.draw.circle(layer, (170, 40, 255, 70), centre, int(radius))
+    pygame.draw.circle(layer, (205, 110, 255, 195), centre, int(radius), 10)
+    pygame.draw.circle(layer, (255, 235, 255, 255), centre, int(radius), 4)
+    screen.blit(layer, (0, 0))
 
 def update_remote_players():
     """Smooth each other player toward their latest position, and move their shots along."""
@@ -6562,9 +6595,17 @@ def draw_remote_players():
         sx, sy = player["x"] - camera_x, player["y"] - camera_y
         if not on_screen(sx + player_size / 2, sy + player_size / 2, 120):
             continue
+        if player.get("shockwave", 0) > 4:
+            draw_remote_shockwave(player["x"] + player_size / 2, player["y"] + player_size / 2, player["shockwave"])
         draw_player_cube(sx, sy, face, SKIN_GLOWS.get(skin, color), player.get("a", 0))
+        draw_held_gun(player["x"] + player_size / 2, player["y"] + player_size / 2, player.get("a", 0),
+                      skin, player.get("last_shot", 99))  # Their gun, aiming where they aim
         for clone in player.get("helpers") or []:  # Their clones, in their skin
             draw_player_cube(clone[0] - camera_x, clone[1] - camera_y, face, SKIN_GLOWS.get(skin, color), clone[2], size=helper_size)
+        if player.get("ice", 0) > 0:  # Frozen solid by someone's Freeze
+            draw_ice_block(sx + player_size / 2, sy + player_size / 2, player_size + 10, 0.2, int(player["x"]))
+        if player.get("shield"):
+            draw_shield(at=(player["x"] + player_size / 2, player["y"] + player_size / 2), aim=player.get("a", 0), flicker=False)
         tag = smaller_button_font.render(name, True, WHITE)
         box = tag.get_rect(midbottom=(sx + player_size / 2, sy - 10)).inflate(12, 4)
         pygame.draw.rect(screen, (20, 24, 32), box, border_radius=6)
@@ -6671,6 +6712,9 @@ def receive_world_message(name, data):
     if kind == "respawn":
         respawn_all_players()
         return
+    if kind == "pvpfreeze" and in_pvp and not player_safe():
+        globals()["pvp_frozen_until"] = time.monotonic() + max(0.0, min(15.0, float(data.get("t", 0))))
+        return
     if kind == "pvphit" and in_pvp:
         pvp_killed_by_someone()
         return
@@ -6704,12 +6748,21 @@ PVP_SEND_EVERY = 0.25
 pvp_minutes = 5                # Settings (the host's are used)
 pvp_first_to_on = False
 pvp_first_to_text = "3"
+pvp_barrier_on = False         # Setting: the barrier closes in, and resets whenever someone is killed
+PVP_BARRIER_TIME = 45.0        # Seconds from the full map down to...
+PVP_BARRIER_SMALLEST = 0.3     # ...this much of it
+pvp_barrier = 1.0              # How much of the map you can play in right now
 pvp_first_to_focused = False
 pvp_settings_timer = 0.0
 pvp_send_timer = 0.0
 pvp_state = {"round": 1, "phase": "fight", "time_left": 300.0, "wins": {}, "winner": None, "timer": 0.0, "fight_time": 0.0}
 pvp_banner = None              # {"text", "timer"}
 pvp_shockwave_hit = set()      # Players this shockwave has already caught
+pvp_frozen_until = 0.0         # Frozen solid by someone's Freeze until this moment
+
+def pvp_frozen_left():
+    """Seconds you are still frozen for (0 when you can move)."""
+    return max(0.0, pvp_frozen_until - time.monotonic()) if in_pvp else 0.0
 
 def pvp_first_to():
     """The First to # number, or None when that setting is off."""
@@ -6826,6 +6879,13 @@ def pvp_spawn_point(name):
     index = players.index(name) if name in players else 0
     return PVP_SPAWNS[index % len(PVP_SPAWNS)]
 
+def pvp_set_barrier(fraction):
+    """How much of the map is inside the barrier right now (1 = all of it)."""
+    global pvp_barrier, storm_survival_map_width, storm_survival_map_height
+    pvp_barrier = max(0.05, min(1.0, fraction))
+    storm_survival_map_width = int(MAP_WIDTH * pvp_barrier)
+    storm_survival_map_height = int(MAP_HEIGHT * pvp_barrier)
+
 def pvp_respawn_me():
     """A new round: back in at your corner."""
     global player_x, player_y, spectating, free_cam, spectate_target, game_over
@@ -6850,6 +6910,7 @@ def pvp_start_game():
     bullets.clear()
     pvp_state = {"round": 1, "phase": "fight", "time_left": pvp_minutes * 60.0, "wins": {}, "winner": None,
                  "timer": 0.0, "fight_time": 0.0}
+    pvp_set_barrier(1.0)
     select_ability_slot(selected_ability_slot)  # No abilities if the host turned upgrades off
     pvp_respawn_me()
 
@@ -6880,6 +6941,15 @@ def update_pvp(dt):
     if state["phase"] == "fight":
         state["fight_time"] += dt
         names, alive = pvp_alive_players()
+        if pvp_barrier_on:  # The barrier closes in, and opens up again every time someone is killed
+            if len(alive) != state.get("alive", len(alive)):
+                state["barrier_time"] = 0.0
+            state["alive"] = len(alive)
+            state["barrier_time"] = state.get("barrier_time", 0.0) + dt
+            closed = min(1.0, state["barrier_time"] / PVP_BARRIER_TIME)
+            pvp_set_barrier(1.0 - closed * (1.0 - PVP_BARRIER_SMALLEST))
+        else:
+            pvp_set_barrier(1.0)
         if state["time_left"] <= 0:  # Out of time: whoever won the most rounds takes it
             state.update(phase="game_over", winner=pvp_leader(state["wins"]), timer=PVP_GAME_END_WAIT)
         elif len(names) >= 2 and state["fight_time"] >= PVP_ROUND_START_GRACE and len(alive) <= 1:
@@ -6908,7 +6978,7 @@ def update_pvp(dt):
         pvp_send_timer = PVP_SEND_EVERY
         net.relay({"k": "pvp", "s": pvp_settings_message(), "round": state["round"], "phase": state["phase"],
                    "time_left": round(state["time_left"], 2), "wins": state["wins"], "winner": state["winner"],
-                   "timer": round(state["timer"], 2)})
+                   "timer": round(state["timer"], 2), "bar": round(pvp_barrier, 3)})
 
 def pvp_leader(wins):
     """Whoever won the most rounds, or None on a tie."""
@@ -6939,7 +7009,10 @@ def pvp_apply_state(state):
         sounds.play("boss_wave_complete" if phase == "game_over" else "wave_complete")
     if round_number != old["round"] and phase == "fight":
         pvp_respawn_me()
+    if net_role() != "host":
+        pvp_set_barrier(float(state.get("bar", 1.0)))
     pvp_state = {"round": round_number, "phase": phase, "time_left": float(state.get("time_left", 0)),
+                 "alive": state.get("alive"), "barrier_time": state.get("barrier_time", 0.0),
                  "wins": {str(k): int(v) for k, v in dict(state.get("wins", {})).items()}, "winner": state.get("winner"),
                  "timer": float(state.get("timer", 0)), "fight_time": float(state.get("fight_time", old.get("fight_time", 0)))}
 
@@ -7035,7 +7108,8 @@ def pvp_panel_layout():
         "plus": pygame.Rect(x + w - 50, panel.y + 104, 50, 46),
         "no_upgrades": pygame.Rect(x, panel.y + 176, w, 50),
         "first_to": pygame.Rect(x, panel.y + 246, w, 50),
-        "first_to_box": pygame.Rect(x, panel.y + 312, w, 50),
+        "barrier": pygame.Rect(x, panel.y + 316, w, 50),
+        "first_to_box": pygame.Rect(x, panel.y + 386, w, 50),
     }
 
 def draw_checkbox_row(rect, text, checked, locked):
@@ -7067,6 +7141,7 @@ def draw_pvp_panel():
     screen.blit(minutes, minutes.get_rect(center=(panel.centerx, layout["minus"].centery)))
     draw_checkbox_row(layout["no_upgrades"], "No upgrades/abilities", pvp_no_upgrades, locked)
     draw_checkbox_row(layout["first_to"], "First to #", pvp_first_to_on, locked)
+    draw_checkbox_row(layout["barrier"], "Barrier Shrink", pvp_barrier_on, locked)
     if pvp_first_to_on:
         box = layout["first_to_box"]
         pygame.draw.rect(screen, WHITE, box, border_radius=8)
@@ -7082,7 +7157,7 @@ def draw_pvp_panel():
 
 def handle_pvp_panel_click(pos):
     """True if the click was on the PVP settings panel."""
-    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_focused, pvp_first_to_text
+    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_focused, pvp_first_to_text, pvp_barrier_on
     if not show_pvp_panel():
         return False
     layout = pvp_panel_layout()
@@ -7098,6 +7173,8 @@ def handle_pvp_panel_click(pos):
         pvp_minutes = min(30, pvp_minutes + 1)
     elif layout["no_upgrades"].collidepoint(pos):
         pvp_no_upgrades = not pvp_no_upgrades
+    elif layout["barrier"].collidepoint(pos):
+        pvp_barrier_on = not pvp_barrier_on
     elif layout["first_to"].collidepoint(pos):
         pvp_first_to_on = not pvp_first_to_on
         pvp_first_to_focused = pvp_first_to_on
@@ -7121,13 +7198,15 @@ def handle_pvp_panel_key(event):
     return True
 
 def pvp_settings_message():
-    return {"k": "pvps", "min": pvp_minutes, "nu": pvp_no_upgrades, "ft": pvp_first_to_on, "n": pvp_first_to_text}
+    return {"k": "pvps", "min": pvp_minutes, "nu": pvp_no_upgrades, "ft": pvp_first_to_on, "n": pvp_first_to_text,
+            "bs": pvp_barrier_on}
 
 def apply_pvp_settings(data):
-    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_text
+    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_text, pvp_barrier_on
     pvp_minutes = max(1, min(30, int(data.get("min", pvp_minutes))))
     pvp_no_upgrades = bool(data.get("nu", pvp_no_upgrades))
     pvp_first_to_on = bool(data.get("ft", pvp_first_to_on))
+    pvp_barrier_on = bool(data.get("bs", pvp_barrier_on))
     text = str(data.get("n", pvp_first_to_text))
     pvp_first_to_text = text if text.isdigit() or text == "" else pvp_first_to_text
     if in_pvp and pvp_no_upgrades:
@@ -7145,7 +7224,7 @@ def send_pvp_settings_to_lobby():
 
 def waves_panel():
     left = 24
-    return pygame.Rect(left, HUB_VIEWPORT.y + 20, WIDTH // 2 - 280 - 70 - left, 440)  # Up to the mode buttons
+    return pygame.Rect(left, HUB_VIEWPORT.y + 20, WIDTH // 2 - 280 - 70 - left, 480)  # Up to the mode buttons
 
 def waves_panel_layout():
     panel = waves_panel()
@@ -8545,8 +8624,8 @@ while running:
                 
 
                 if event.button == 1:  # Only left mouse button
-                    # Don't shoot in editor mode
-                    if not (in_shooting_range and shooting_range_editor_mode):
+                    # Don't shoot in editor mode (or while frozen solid in PVP)
+                    if not (in_shooting_range and shooting_range_editor_mode) and not pvp_frozen_left():
                         current_time = pygame.time.get_ticks() / 1000
                         if current_time - last_shot_time >= (GUN_SHOT_DELAYS[0] if pvp_no_upgrades_active() else shot_delay) * (2 if active_gun_addon() in HALF_RATE_ADDONS else 1):
                             bullet_speed = 10
@@ -8647,6 +8726,8 @@ while running:
                 freeze_active = True
                 freeze_timer = 0.0
                 freeze_cooldown = freeze_cooldown_time
+                if in_pvp:
+                    net.relay({"k": "pvpfreeze", "t": freeze_duration})  # Everyone else freezes solid
         # Helpers ability (disabled in editor mode)
         if has_helpers and equipped_ability == 'helpers' and event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and not (in_shooting_range and shooting_range_editor_mode):
             if helpers_cooldown <= 0:
@@ -8733,7 +8814,7 @@ while running:
             if keys[pygame.K_d]: camera_x += camera_speed
         else:
             # Play mode: Player movement (a spectator steers the camera instead)
-            if not game_paused and not spectating:
+            if not game_paused and not spectating and not pvp_frozen_left():
                 before_x, before_y = player_x, player_y
                 if keys[pygame.K_w]: player_y -= player_speed
                 if keys[pygame.K_s]: player_y += player_speed
