@@ -2739,6 +2739,287 @@ def draw_admin_panel():
         text = button_font.render(label, True, BLACK)
         screen.blit(text, text.get_rect(center=rect.center))
 
+# ---- Owner menu (` on the owner account): pages of everything the console used to do ----
+owner_menu_open = False
+owner_tab = "Players"
+OWNER_TABS = ("Players", "Gameplay", "Skins", "Upgrades")
+owner_fields = {"wave": "", "boss": ""}   # What is typed in the Gameplay boxes
+owner_focus = None                        # Which box is being typed in
+owner_scroll = 0.0
+OWNER_PANEL = pygame.Rect(WIDTH // 2 - 520, 90, 1040, 720)
+
+def owner_layout():
+    """Every rectangle in the owner menu."""
+    panel = OWNER_PANEL
+    tab_w = (panel.width - 60) // len(OWNER_TABS)
+    layout = {"panel": panel, "close": pygame.Rect(panel.right - 66, panel.y + 16, 48, 48),
+              "tabs": {name: pygame.Rect(panel.x + 30 + i * tab_w, panel.y + 92, tab_w - 10, 50)
+                       for i, name in enumerate(OWNER_TABS)},
+              "body": pygame.Rect(panel.x + 24, panel.y + 158, panel.width - 48, panel.height - 182)}
+    body = layout["body"]
+    if owner_tab == "Players":
+        layout["kick"] = [pygame.Rect(body.right - 150, body.y + 20 + i * 64, 120, 46) for i in range(4)]
+        layout["rows"] = [pygame.Rect(body.x + 10, body.y + 14 + i * 64, body.width - 20, 54) for i in range(4)]
+    elif owner_tab == "Gameplay":
+        layout["wave_box"] = pygame.Rect(body.x + 230, body.y + 20, 180, 52)
+        layout["wave_go"] = pygame.Rect(body.x + 430, body.y + 20, 120, 52)
+        layout["boss_box"] = pygame.Rect(body.x + 230, body.y + 90, 180, 52)
+        layout["boss_go"] = pygame.Rect(body.x + 430, body.y + 90, 120, 52)
+        layout["orbs"] = pygame.Rect(body.x + 230, body.y + 160, 320, 52)
+        layout["keys"] = pygame.Rect(body.x + 230, body.y + 230, 320, 52)
+        layout["aimbot"] = pygame.Rect(body.x + 230, body.y + 300, 320, 52)
+        layout["give"] = pygame.Rect(body.x + 230, body.y + 370, 320, 52)
+        layout["respawn"] = pygame.Rect(body.x + 230, body.y + 440, 320, 52)
+    elif owner_tab == "Skins":
+        layout["skins"] = [(name, pygame.Rect(body.x + 16 + (i % 6) * 166, body.y + 16 + (i // 6) * 92, 150, 78))
+                           for i, name in enumerate(shop_skins)]
+    else:
+        layout["gun_minus"] = pygame.Rect(body.x + 300, body.y + 20, 60, 50)
+        layout["gun_plus"] = pygame.Rect(body.x + 470, body.y + 20, 60, 50)
+        layout["magnet_minus"] = pygame.Rect(body.x + 300, body.y + 86, 60, 50)
+        layout["magnet_plus"] = pygame.Rect(body.x + 470, body.y + 86, 60, 50)
+        layout["abilities"] = [(key, pygame.Rect(body.x + 20 + (i % 3) * 230, body.y + 190 + (i // 3) * 64, 210, 52))
+                               for i, (key, _, _, _) in enumerate(ABILITIES)]
+        layout["addons"] = [(item["key"], pygame.Rect(body.x + 20 + (i % 3) * 230, body.y + 372 + (i // 3) * 64, 210, 52))
+                            for i, item in enumerate(GUN_ADDONS)]
+    return layout
+
+def open_owner_menu():
+    global owner_menu_open, console_was_paused, game_paused, owner_focus
+    owner_menu_open = True
+    owner_focus = None
+    console_was_paused = game_paused
+    game_paused = True
+
+def close_owner_menu():
+    global owner_menu_open, game_paused, owner_focus
+    owner_menu_open = False
+    owner_focus = None
+    game_paused = console_was_paused
+
+def owner_lobby_players():
+    return list(net.lobby["players"]) if net.lobby else []
+
+def owner_kick(name):
+    """Host only: throw someone out of the lobby (their game leaves it)."""
+    global console_message, console_message_timer
+    if not net.lobby or not net.is_host or name == net.name:
+        return
+    net.relay({"k": "kick"}, to=name)
+    console_message, console_message_timer = f"Kicked {name}", 2.5
+
+def owner_set_skin(name):
+    """Unlock a skin and put it on."""
+    global current_skin, main_game_skin
+    owned_skins[name] = main_game_owned_skins[name] = True
+    current_skin = main_game_skin = name
+
+def owner_set_level(track, change):
+    """Move the gun or magnet up or down a level."""
+    global shot_delay
+    g = globals()
+    level = max(0, min(5, (gun_level() if track == "gun" else magnet_level()) + change))
+    for n in range(1, 6):
+        flag = f"has_gun_upgrade_{n}" if track == "gun" else f"has_magnet_{n}"
+        g[flag] = g["main_game_" + flag] = n <= level
+    if track == "gun":
+        shot_delay = g["main_game_shot_delay"] = GUN_SHOT_DELAYS[gun_level()]
+
+def owner_toggle_ability(key):
+    g = globals()
+    g["has_" + key] = g["main_game_has_" + key] = not g["has_" + key]
+    if not g["has_" + key]:
+        for i, slot in enumerate(ability_slots):
+            if slot == key:
+                ability_slots[i] = None
+    elif None in ability_slots and key not in ability_slots:
+        ability_slots[ability_slots.index(None)] = key
+    select_ability_slot(selected_ability_slot)
+
+def owner_toggle_addon(key):
+    global gun_addon
+    item = next(a for a in GUN_ADDONS if a["key"] == key)
+    g = globals()
+    if gun_addon == key:
+        gun_addon = None
+        return
+    g[item["flag"]] = g["main_game_" + item["flag"]] = True
+    gun_addon = key
+
+def draw_owner_row(rect, label, on=None, colour=BLUE):
+    draw_button(rect, colour if on is None else (GREEN if on else (95, 100, 110)))
+    text = small_button_font.render(label, True, BLACK)
+    if text.get_width() > rect.width - 16:
+        text = pygame.transform.smoothscale(text, (rect.width - 16, text.get_height()))
+    screen.blit(text, text.get_rect(center=rect.center))
+
+def draw_owner_menu():
+    shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    shade.fill((0, 0, 0, 195))
+    screen.blit(shade, (0, 0))
+    layout = owner_layout()
+    panel = layout["panel"]
+    pygame.draw.rect(screen, (22, 25, 32), panel, border_radius=20)
+    pygame.draw.rect(screen, (255, 200, 90), panel, 3, border_radius=20)
+    title = get_bubble_text("OWNER", 44, (255, 235, 150), (255, 150, 40))
+    screen.blit(title, title.get_rect(midtop=(panel.centerx, panel.y + 10)))
+    draw_button(layout["close"], RED)
+    x_text = button_font.render("X", True, BLACK)
+    screen.blit(x_text, x_text.get_rect(center=layout["close"].center))
+    for name, rect in layout["tabs"].items():
+        draw_button(rect, YELLOW if name == owner_tab else BLUE)
+        text = small_button_font.render(name, True, BLACK)
+        screen.blit(text, text.get_rect(center=rect.center))
+    body = layout["body"]
+    pygame.draw.rect(screen, (16, 18, 24), body, border_radius=14)
+    if owner_tab == "Players":
+        players = owner_lobby_players()
+        if not players:
+            note = coin_font.render("You're not in a multiplayer lobby", True, (170, 175, 182))
+            screen.blit(note, note.get_rect(center=body.center))
+        for i, row in enumerate(layout["rows"]):
+            if i >= len(players):
+                break
+            name = players[i]
+            pygame.draw.rect(screen, (30, 34, 44), row, border_radius=10)
+            you = " (you)" if name == net.name else ""
+            host = "  HOST" if net.lobby and name == net.lobby.get("host") else ""
+            text = coin_font.render(name + you + host, True, WHITE)
+            screen.blit(text, text.get_rect(midleft=(row.x + 16, row.centery)))
+            if name != net.name and net.is_host:
+                draw_owner_row(layout["kick"][i], "Kick", colour=RED)
+    elif owner_tab == "Gameplay":
+        boss_name = BOSSES[active_boss["kind"]]["name"].title() if active_boss else "no boss"
+        for label, key in (("Go to wave", "wave_box"), (f"Boss health ({boss_name})", "boss_box")):
+            box = layout[key]
+            text = small_button_font.render(label, True, (205, 210, 216))
+            screen.blit(text, text.get_rect(midright=(box.x - 16, box.centery)))
+            pygame.draw.rect(screen, WHITE, box, border_radius=8)
+            focused = owner_focus == key
+            pygame.draw.rect(screen, (255, 200, 60) if focused else (40, 40, 40), box, 3 if focused else 2, border_radius=8)
+            typed = button_font.render(owner_fields["wave" if key == "wave_box" else "boss"], True, BLACK)
+            screen.blit(typed, typed.get_rect(midleft=(box.x + 12, box.centery)))
+        draw_owner_row(layout["wave_go"], "Go", colour=GREEN)
+        draw_owner_row(layout["boss_go"], "Set", colour=GREEN)
+        draw_owner_row(layout["orbs"], "Break Purple Boss orbs")
+        draw_owner_row(layout["keys"], "Shortcut keys (L K M P J)", on=kill_cheat_enabled)
+        draw_owner_row(layout["aimbot"], "Aimbot", on=aimbot_on)
+        draw_owner_row(layout["give"], "Give everything")
+        draw_owner_row(layout["respawn"], "Respawn everyone")
+    elif owner_tab == "Skins":
+        for name, rect in layout["skins"]:
+            wearing = name == current_skin
+            draw_button(rect, GREEN if wearing else BLUE)
+            face = skin_face(name, pygame.time.get_ticks() / 1000.0)
+            draw_player_cube(rect.x + 8, rect.centery - 24, face, SKIN_GLOWS.get(name, WHITE), 0, size=48)
+            text = smaller_button_font.render(name.capitalize(), True, BLACK)
+            screen.blit(text, text.get_rect(midleft=(rect.x + 66, rect.centery)))
+    else:
+        for label, level, minus, plus in (("Gun", gun_level(), "gun_minus", "gun_plus"),
+                                          ("Magnet", magnet_level(), "magnet_minus", "magnet_plus")):
+            row_y = layout[minus].centery
+            text = coin_font.render(label, True, WHITE)
+            screen.blit(text, text.get_rect(midright=(layout[minus].x - 20, row_y)))
+            draw_owner_row(layout[minus], "-")
+            draw_owner_row(layout[plus], "+")
+            numeral = coin_font.render(["None", "I", "II", "III", "IV", "V"][level], True, (255, 222, 95))
+            screen.blit(numeral, numeral.get_rect(center=((layout[minus].right + layout[plus].x) // 2, row_y)))
+        heading = coin_font.render("Abilities", True, (255, 222, 95))
+        screen.blit(heading, (body.x + 20, layout["abilities"][0][1].y - 36))
+        for key, rect in layout["abilities"]:
+            name = next(n for k, n, _, _ in ABILITIES if k == key)
+            draw_owner_row(rect, name, on=globals()["has_" + key])
+        heading = coin_font.render("Gun add-ons", True, (255, 222, 95))
+        screen.blit(heading, (body.x + 20, layout["addons"][0][1].y - 36))
+        for key, rect in layout["addons"]:
+            item = next(a for a in GUN_ADDONS if a["key"] == key)
+            draw_owner_row(rect, item["name"], on=gun_addon == key)
+
+def handle_owner_menu_click(pos):
+    global owner_tab, owner_focus, console_message, console_message_timer
+    layout = owner_layout()
+    if layout["close"].collidepoint(pos) or not layout["panel"].collidepoint(pos):
+        close_owner_menu()
+        return
+    for name, rect in layout["tabs"].items():
+        if rect.collidepoint(pos):
+            owner_tab, owner_focus = name, None
+            return
+    if owner_tab == "Players":
+        for i, rect in enumerate(layout["kick"]):
+            players = owner_lobby_players()
+            if rect.collidepoint(pos) and i < len(players):
+                owner_kick(players[i])
+                return
+    elif owner_tab == "Gameplay":
+        owner_focus = None
+        if layout["wave_box"].collidepoint(pos):
+            owner_focus = "wave_box"
+        elif layout["boss_box"].collidepoint(pos):
+            owner_focus = "boss_box"
+        elif layout["wave_go"].collidepoint(pos) and owner_fields["wave"].isdigit():
+            jump_to_wave(int(owner_fields["wave"]))
+            close_owner_menu()
+        elif layout["boss_go"].collidepoint(pos) and owner_fields["boss"].isdigit():
+            if active_boss is None:
+                console_message, console_message_timer = "You're not in a boss fight", 2.5
+            elif set_boss_health(active_boss["kind"], int(owner_fields["boss"])):
+                close_owner_menu()
+        elif layout["orbs"].collidepoint(pos):
+            if purple_boss_break_orbs():
+                close_owner_menu()
+            else:
+                console_message_timer = 2.5
+        elif layout["keys"].collidepoint(pos):
+            on = not kill_cheat_enabled
+            globals().update(kill_cheat_enabled=on, coin_cheat_enabled=on, no_death_cheat_enabled=on)
+        elif layout["aimbot"].collidepoint(pos):
+            globals()["aimbot_on"] = not aimbot_on
+        elif layout["give"].collidepoint(pos):
+            admin_give_everything()
+        elif layout["respawn"].collidepoint(pos):
+            respawn_all_players(announce=True)
+    elif owner_tab == "Skins":
+        for name, rect in layout["skins"]:
+            if rect.collidepoint(pos):
+                owner_set_skin(name)
+                return
+    else:
+        for key, change in (("gun_minus", -1), ("gun_plus", 1)):
+            if layout[key].collidepoint(pos):
+                owner_set_level("gun", change)
+                return
+        for key, change in (("magnet_minus", -1), ("magnet_plus", 1)):
+            if layout[key].collidepoint(pos):
+                owner_set_level("magnet", change)
+                return
+        for key, rect in layout["abilities"]:
+            if rect.collidepoint(pos):
+                owner_toggle_ability(key)
+                return
+        for key, rect in layout["addons"]:
+            if rect.collidepoint(pos):
+                owner_toggle_addon(key)
+                return
+
+def handle_owner_menu_key(event):
+    global owner_focus
+    if event.key == pygame.K_ESCAPE:
+        close_owner_menu()
+        return
+    if event.key in (pygame.K_BACKQUOTE,) or event.unicode == "`":
+        close_owner_menu()
+        return
+    if owner_focus is None:
+        return
+    field = "wave" if owner_focus == "wave_box" else "boss"
+    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+        handle_owner_menu_click(owner_layout()["wave_go" if field == "wave" else "boss_go"].center)
+    elif event.key == pygame.K_BACKSPACE:
+        owner_fields[field] = owner_fields[field][:-1]
+    elif event.unicode.isdigit() and len(owner_fields[field]) < 4:
+        owner_fields[field] += event.unicode
+
 # ---- Pause menu (Escape during a game) ----
 pause_menu_open = False
 pause_menu_anim = 0.0        # 0 = hidden above the screen, 1 = fully down
@@ -7303,6 +7584,14 @@ def receive_world_message(name, data):
     if kind == "respawn":
         respawn_all_players()
         return
+    if kind == "kick" and net.lobby and name == net.lobby.get("host"):
+        globals().update(console_message="You were kicked from the lobby", console_message_timer=4.0)
+        net.leave_lobby()
+        if multiplayer_match:
+            globals()["multiplayer_match"] = False
+            exit_to_main_menu()
+            globals().update(start_screen=False, hub_open=True, hub_tab="Play")
+        return
     if kind == "pvpfreeze" and in_pvp and not player_safe():
         globals()["pvp_frozen_until"] = time.monotonic() + max(0.0, min(15.0, float(data.get("t", 0))))
         return
@@ -9093,14 +9382,19 @@ while running:
         # Code console: ` drops the typing bar down from the top, on any screen or game mode
         if event.type == pygame.KEYDOWN and (event.key == pygame.K_BACKQUOTE or event.unicode == "`"):
             if not owner_unlocked:
-                continue  # Only the owner account gets the console bar
-            if console_open or admin_code_open or admin_panel_open:
+                continue  # Only the owner account gets the owner menu
+            if owner_menu_open:
+                close_owner_menu()
+            elif console_open or admin_code_open or admin_panel_open:
                 close_console_stack()
             else:
-                console_open = True
-                console_input = ""
-                console_was_paused = game_paused
-                game_paused = True  # Freeze the game while typing
+                open_owner_menu()
+            continue
+        if owner_menu_open:  # The owner menu has the screen
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                handle_owner_menu_click(getattr(event, "pos", None) or pygame.mouse.get_pos())
+            elif event.type == pygame.KEYDOWN:
+                handle_owner_menu_key(event)
             continue
         # Admin accounts: Z opens (or closes) the admin menu
         if event.type == pygame.KEYDOWN and event.key == pygame.K_z and admin_unlocked and not console_open and not admin_code_open:
@@ -10831,6 +11125,8 @@ while running:
         draw_admin_code()
     elif admin_panel_open:
         draw_admin_panel()
+    if owner_menu_open:
+        draw_owner_menu()
 
     # Code console feedback message
     if console_message_timer > 0:
