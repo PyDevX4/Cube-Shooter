@@ -2568,6 +2568,13 @@ def set_boss_health(kind, health):
             pink_boss_start_25(boss)
         elif 50 < health < 100:
             boss["phase"], boss["zigzag"] = "zigzag", {"state": "pause", "timer": PINK_ZIGZAG_PAUSE, "dir": (1, 1)}
+    if kind == "violet":
+        boss["events_done"] = [at for at in (175, 150) if at > health]
+        boss["spikes"], boss["shielded"] = None, False
+        if health in (175, 150):
+            violet_boss_start_guard(boss, health)
+        else:
+            violet_boss_start_chase(boss, 175 if health < 175 else 200)
     if kind == "yellow":
         boss["events_done"] = [at for at in (75, 50, 25) if at > health]
         boss["event"], boss["shielded"], boss["arms"] = None, False, None
@@ -4082,7 +4089,7 @@ def spawn_boss(kind):
     if kind == "violet":
         active_boss.update({"phase": "start", "timer": VIOLET_BOSS_START_WAIT, "events_done": [], "shielded": True,
                             "arms": [{"alive": True, "reach": 0.0} for _ in range(VIOLET_BOSS_ARMS)],
-                            "arm_hits": 0, "last_arm": None, "sway": 0.0, "swing": 0.0})
+                            "sway": 0.0, "spikes": None})
     if kind == "yellow":
         active_boss.update({"slots": [1.0, 1.0, 1.0, 1.0], "spin": 0.0, "throw_timer": YELLOW_BOSS_THROW_EVERY,
                             "events_done": [], "event": None, "barrage_fired": 0, "barrage_timer": 0.0,
@@ -4572,10 +4579,20 @@ VIOLET_BOSS_SEGMENT = 26           # ...so a tentacle is about 360 px long when 
 VIOLET_BOSS_REACH_SPEED = 0.45     # How fast a tentacle reaches out (a share of the way each second): slow
 VIOLET_BOSS_PULL_BACK = 0.8        # How fast the ones pointing away curl back in
 VIOLET_BOSS_ARM_SPREAD = math.radians(75)   # Tentacles this close to your direction reach for you
-VIOLET_BOSS_WARN_TIME = 1.0        # 200-175: the paths light up for this long before the tentacles grow...
+VIOLET_BOSS_WARN_TIME = 1.0        # The paths light up for this long before the tentacles grow...
 VIOLET_BOSS_GROW_TIME = 1.4        # ...then they grow out along them over this long
-VIOLET_BOSS_SWING_SPEED = 1.1      # 200-175: how fast the stretched-out tentacles swing...
+VIOLET_BOSS_SWING_SPEED = 1.1      # How fast stretched-out tentacles swing...
 VIOLET_BOSS_SWING_ARC = math.radians(50)   # ...and how far each way they swing
+VIOLET_BOSS_CHASE_SPEED = 0.9      # How fast he walks after you while he is chasing (slow)
+VIOLET_BOSS_CHASE_SPAWNS = {200: {"violet": 25}, 175: {"violet": 35}}   # The violets that come with each chase
+VIOLET_BOSS_GUARD_SPAWNS = {175: {"pink": 20, "orange": 10}}            # His shielded wave at 175
+VIOLET_SPIKE_COUNT = 50            # At 150: this many tentacle spikes stab in from outside the barrier...
+VIOLET_SPIKE_ROUNDS = 20           # ...this many times...
+VIOLET_SPIKE_WARNING = 1.0         # ...each shown this long first...
+VIOLET_SPIKE_REACH = 2100          # ...stabbing this far into the map (well past the middle)...
+VIOLET_SPIKE_SPEED = 2600          # ...at this speed, then pulling back out
+VIOLET_SPIKE_GAP = 0.45            # Rest between rounds
+VIOLET_SPIKE_HIT = 26              # How close a spike has to be to kill you
 
 def violet_boss_arm_length(boss, angle):
     """How long a tentacle pointing this way can grow before its tip reaches the barrier."""
@@ -4590,106 +4607,184 @@ def violet_boss_arm_length(boss, angle):
     return max(VIOLET_BOSS_SEGMENT * 2, reach)
 
 def violet_boss_arm_points(boss, k):
-    """The joints of tentacle k, from the boss out to the tip. While he sweeps, every tentacle is straight out
-    to the barrier and swings side to side; before that they curl gently."""
+    """The joints of tentacle k, from the boss out to the tip: they curl and sway as he moves."""
     base = k * 2 * math.pi / VIOLET_BOSS_ARMS
-    arm = boss["arms"][k]
-    if boss["phase"] in ("warn", "grow", "sweep"):
-        # Growing: straight out along the warning line. Sweeping: the same, swinging side to side.
-        swing = math.sin(boss["swing"] * VIOLET_BOSS_SWING_SPEED + k * 0.35) * VIOLET_BOSS_SWING_ARC if boss["phase"] == "sweep" else 0.0
-        angle = base + swing
-        grown = 1.0 if boss["phase"] == "sweep" else violet_boss_grown(boss)  # Short stubs while the warning shows
-        length = violet_boss_arm_length(boss, angle)
-        sx, sy = boss["x"] + math.cos(angle) * (BOSS_RADIUS - 6), boss["y"] + math.sin(angle) * (BOSS_RADIUS - 6)
-        step = (length - BOSS_RADIUS) / VIOLET_BOSS_SEGMENTS * grown
-        wave = math.sin(boss["swing"] * VIOLET_BOSS_SWING_SPEED * 2 + k) * 0.06 if boss["phase"] == "sweep" else 0.0
-        points, x, y = [(sx, sy)], sx, sy
-        for j in range(1, VIOLET_BOSS_SEGMENTS + 1):
-            a = angle + wave * (j / VIOLET_BOSS_SEGMENTS)
-            x += math.cos(a) * step
-            y += math.sin(a) * step
-            points.append((x, y))
-        return points
     sx, sy = boss["x"] + math.cos(base) * (BOSS_RADIUS - 6), boss["y"] + math.sin(base) * (BOSS_RADIUS - 6)
-    tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
-    to_player = math.atan2(ty + player_size / 2 - sy, tx + player_size / 2 - sx)
     points, x, y = [(sx, sy)], sx, sy
     for j in range(1, VIOLET_BOSS_SEGMENTS + 1):
-        curl = math.sin(boss["sway"] * 1.2 + k * 1.7 - j * 0.4) * 0.3 + 0.13 * j / VIOLET_BOSS_SEGMENTS
-        resting = base + curl * j * 0.3
-        angle = resting + (to_player - resting) * arm["reach"]
+        curl = math.sin(boss["sway"] * 1.3 + k * 1.7 - j * 0.42) * 0.32 + 0.12 * j / VIOLET_BOSS_SEGMENTS
+        angle = base + curl * j * 0.3
         x += math.cos(angle) * VIOLET_BOSS_SEGMENT
         y += math.sin(angle) * VIOLET_BOSS_SEGMENT
         points.append((x, y))
     return points
 
-def violet_boss_grown(boss):
-    """How far out the tentacles are while they grow (0 = tucked in, 1 = all the way to the barrier)."""
-    if boss["phase"] == "warn":
-        return 0.06   # Pulled in, waiting to shoot out along the warning
-    if boss["phase"] != "grow":
-        return 1.0
-    return max(0.06, min(1.0, 1 - boss["timer"] / VIOLET_BOSS_GROW_TIME))
+def violet_boss_start_chase(boss, at):
+    """200-175 and 175-150: he walks after you, with a crowd of violets called in once."""
+    boss["phase"] = "chase"
+    boss["shielded"] = False
+    boss["spikes"] = None
+    spawn_minions_any(VIOLET_BOSS_CHASE_SPAWNS[at])
+
+def violet_boss_start_guard(boss, at):
+    """At 175 and 150: everything dies, he teleports back to the middle and shields up."""
+    kill_all_enemies_no_coins()
+    blue_bullets.clear()
+    boss["events_done"].append(at)
+    boss["health"] = at
+    boss["x"], boss["y"] = MAP_WIDTH / 2, MAP_HEIGHT / 2
+    spawn_teleport_flash(boss["x"], boss["y"], boss["x"], boss["y"], (190, 140, 255))
+    effects.append({"type": "flash", "x": boss["x"], "y": boss["y"], "age": 0.0, "life": 0.5,
+                    "color": BOSSES["violet"]["color"], "size": 3.5})
+    boss["shielded"], boss["ripple"] = True, 0.4
+    if at == 150:
+        violet_boss_start_spikes(boss)   # His tentacles stab in from outside the barrier instead
+    else:
+        boss["phase"] = "guard"
+        spawn_minions_any(VIOLET_BOSS_GUARD_SPAWNS[at])
+
+def violet_boss_start_spikes(boss):
+    boss["phase"] = "spikes"
+    boss["spikes"] = {"round": 0, "state": "warning", "timer": VIOLET_SPIKE_WARNING, "spikes": violet_new_spikes()}
+
+def violet_new_spikes():
+    """Where this round's spikes come in: each one starts outside the barrier and stabs straight inward."""
+    spikes = []
+    for _ in range(VIOLET_SPIKE_COUNT):
+        side = random.randrange(4)
+        along = random.uniform(40, (MAP_WIDTH if side % 2 == 0 else MAP_HEIGHT) - 40)
+        if side == 0:
+            start, direction = (along, -30), (0, 1)
+        elif side == 1:
+            start, direction = (MAP_WIDTH + 30, along), (-1, 0)
+        elif side == 2:
+            start, direction = (along, MAP_HEIGHT + 30), (0, -1)
+        else:
+            start, direction = (-30, along), (1, 0)
+        spikes.append({"x": start[0], "y": start[1], "dx": direction[0], "dy": direction[1], "out": 0.0})
+    return spikes
+
+def update_violet_spikes(boss, dt):
+    """1 s warning, then every spike stabs in, kills whatever it touches, and pulls back out. 20 rounds."""
+    spikes = boss["spikes"]
+    spikes["timer"] -= dt
+    if spikes["state"] == "warning":
+        if spikes["timer"] <= 0:
+            spikes["state"] = "stab"
+        return
+    if spikes["state"] == "stab":
+        done = True
+        for spike in spikes["spikes"]:
+            spike["out"] = min(VIOLET_SPIKE_REACH, spike["out"] + VIOLET_SPIKE_SPEED * dt)
+            if spike["out"] < VIOLET_SPIKE_REACH:
+                done = False
+        violet_spikes_hit_player(boss)
+        if done:
+            spikes["state"] = "pull"
+        return
+    if spikes["state"] == "pull":
+        gone = True
+        for spike in spikes["spikes"]:
+            spike["out"] = max(0.0, spike["out"] - VIOLET_SPIKE_SPEED * dt)
+            if spike["out"] > 0:
+                gone = False
+        violet_spikes_hit_player(boss)
+        if gone:
+            spikes["round"] += 1
+            if spikes["round"] >= VIOLET_SPIKE_ROUNDS:
+                boss["spikes"] = None      # (Nothing after this yet)
+                boss["shielded"] = False
+                boss["phase"] = "chase"
+                return
+            spikes["state"], spikes["timer"] = "gap", VIOLET_SPIKE_GAP
+        return
+    if spikes["state"] == "gap" and spikes["timer"] <= 0:
+        spikes.update(state="warning", timer=VIOLET_SPIKE_WARNING, spikes=violet_new_spikes())
+
+def violet_spike_line(spike):
+    """(start, tip) of a spike as it is now."""
+    tip = (spike["x"] + spike["dx"] * spike["out"], spike["y"] + spike["dy"] * spike["out"])
+    return (spike["x"], spike["y"]), tip
+
+def violet_spikes_hit_player(boss):
+    if game_over or player_safe():
+        return
+    px, py = player_x + player_size / 2, player_y + player_size / 2
+    for spike in boss["spikes"]["spikes"]:
+        (sx, sy), (tx, ty) = violet_spike_line(spike)
+        if point_to_segment_distance(px, py, sx, sy, tx, ty) < VIOLET_SPIKE_HIT + player_size / 2 - 8:
+            player_hit()
+            return
 
 def update_violet_boss(boss, dt):
-    """3 s wait, then 200-175: the paths light up, the tentacles grow out along them to the barrier, and once
-    they are all out they sweep back and forth. The tentacles can't be shot - you have to hit him."""
+    """3 s wait, then he chases you with his violets. At 175 and 150 everything dies and he shields in the middle:
+    175 calls in pinks and oranges, 150 stabs his tentacles in from outside the barrier."""
     boss["sway"] += dt
     boss["timer"] -= dt
     if boss["phase"] == "start":
         if boss["timer"] <= 0:
-            boss["phase"], boss["timer"] = "warn", VIOLET_BOSS_WARN_TIME  # Where they are about to reach
-            boss["shielded"] = False   # He can be hurt from here on
-            for arm in boss["arms"]:
-                arm["reach"] = 1.0
+            violet_boss_start_chase(boss, 200)
         return
-    if boss["phase"] == "warn":
-        if boss["timer"] <= 0:
-            boss["phase"], boss["timer"] = "grow", VIOLET_BOSS_GROW_TIME
+    if boss["phase"] == "chase":
+        tx, ty = nearest_player(boss["x"] - player_size / 2, boss["y"] - player_size / 2)
+        px, py = tx + player_size / 2, ty + player_size / 2
+        gap = math.hypot(px - boss["x"], py - boss["y"])
+        if gap > 1:
+            boss["x"] += (px - boss["x"]) / gap * VIOLET_BOSS_CHASE_SPEED
+            boss["y"] += (py - boss["y"]) / gap * VIOLET_BOSS_CHASE_SPEED
         return
-    if boss["phase"] == "grow":
-        if boss["timer"] <= 0:
-            boss["phase"], boss["swing"] = "sweep", 0.0
+    if boss["phase"] == "guard":
+        if not any_enemies_alive():   # His wave is dead: back to chasing, with more violets
+            violet_boss_start_chase(boss, 175)
         return
-    if boss["phase"] == "sweep":
-        boss["swing"] += dt
+    if boss["phase"] == "spikes":
+        update_violet_spikes(boss, dt)
 
 def violet_boss_tentacles_touch_player(boss):
-    """Touching a tentacle kills you."""
-    if boss["phase"] == "start" or game_over or player_safe():
+    """Touching a tentacle kills you (his own arms, while he is out chasing you)."""
+    if boss["phase"] in ("start", "spikes") or game_over or player_safe():
         return
     px, py = player_x + player_size / 2, player_y + player_size / 2
     for k, arm in enumerate(boss["arms"]):
         if not arm["alive"]:
             continue
-        joints = violet_boss_arm_points(boss, k)
-        if any(math.hypot(x - px, y - py) < player_size / 2 + 8 for x, y in joints[2:]):
+        if any(math.hypot(x - px, y - py) < player_size / 2 + 8 for x, y in violet_boss_arm_points(boss, k)[2:]):
             player_hit()
             return
 
 def violet_boss_take_bullet(boss, bullet):
-    """While he sweeps, shots go past the tentacles and hit him. (Nothing else takes shots yet.)"""
+    """His tentacles don't take shots - you hit him."""
     return False
 
-def draw_violet_boss_warning(boss):
-    """Where each tentacle is about to reach: a violet beam out to the barrier that fills up as it charges."""
-    charge = 1.0 if boss["phase"] == "grow" else 1 - max(0.0, boss["timer"]) / VIOLET_BOSS_WARN_TIME
-    pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 90)
+def draw_violet_spikes(boss):
+    """The spikes coming in from outside the barrier, and the warning lines showing where."""
+    spikes = boss.get("spikes")
+    if not spikes:
+        return
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    for k, arm in enumerate(boss["arms"]):
-        if not arm["alive"]:
+    if spikes["state"] == "warning":
+        charge = 1 - max(0.0, spikes["timer"]) / VIOLET_SPIKE_WARNING
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 80)
+        for spike in spikes["spikes"]:
+            start = (spike["x"] - camera_x, spike["y"] - camera_y)
+            end = (spike["x"] + spike["dx"] * VIOLET_SPIKE_REACH - camera_x, spike["y"] + spike["dy"] * VIOLET_SPIKE_REACH - camera_y)
+            pygame.draw.line(layer, (170, 90, 255, int(50 + 70 * charge)), start, end, int(10 + 16 * charge))
+            pygame.draw.line(layer, (235, 210, 255, int(120 + 100 * pulse * charge)), start, end, 3)
+    for spike in spikes["spikes"]:
+        if spike["out"] <= 0:
             continue
-        angle = k * 2 * math.pi / VIOLET_BOSS_ARMS
-        length = violet_boss_arm_length(boss, angle)
-        start = (boss["x"] + math.cos(angle) * (BOSS_RADIUS - 6) - camera_x, boss["y"] + math.sin(angle) * (BOSS_RADIUS - 6) - camera_y)
-        end = (boss["x"] + math.cos(angle) * length - camera_x, boss["y"] + math.sin(angle) * length - camera_y)
-        pygame.draw.line(layer, (170, 90, 255, int(60 + 70 * charge)), start, end, int(16 + 24 * charge))
-        pygame.draw.line(layer, (235, 210, 255, int(150 + 90 * pulse * charge)), start, end, 4)
+        (sx, sy), (tx, ty) = violet_spike_line(spike)
+        start, tip = (sx - camera_x, sy - camera_y), (tx - camera_x, ty - camera_y)
+        side = (-spike["dy"], spike["dx"])
+        for width, colour in ((22, (120, 70, 175)), (14, (165, 110, 225)), (6, (215, 180, 255))):
+            pygame.draw.line(layer, colour, start, tip, width)
+        point = [(tip[0] + spike["dx"] * 26, tip[1] + spike["dy"] * 26),
+                 (tip[0] + side[0] * 13, tip[1] + side[1] * 13),
+                 (tip[0] - side[0] * 13, tip[1] - side[1] * 13)]
+        pygame.draw.polygon(layer, (225, 195, 255), point)
     screen.blit(layer, (0, 0))
 
 def draw_violet_boss_arms(boss, cx, cy):
-    if boss["phase"] in ("warn", "grow"):
-        draw_violet_boss_warning(boss)
     for k, arm in enumerate(boss["arms"]):
         base = k * 2 * math.pi / VIOLET_BOSS_ARMS
         if not arm["alive"]:
@@ -5427,6 +5522,13 @@ def hurt_boss(amount=1, force=False):
             boss["ripple"] = 0.25
             sounds.play("shield_block", 0.6)
             return
+        boss["health"] -= amount
+        boss["flash"] = 0.08
+        for at in (175, 150):   # Everything dies and he shields up in the middle
+            if boss["health"] <= at and at not in boss["events_done"] and boss["health"] > 0:
+                violet_boss_start_guard(boss, at)
+                break
+        amount = 0
     if boss["kind"] == "blue" and not force:
         if boss["shielded"]:
             boss["ripple"] = 0.25  # The shot splashes off the shield
@@ -5647,6 +5749,7 @@ def draw_boss():
         look_x, look_y = end
     if boss["kind"] == "violet":
         draw_violet_boss_arms(boss, cx, cy)
+        draw_violet_spikes(boss)
     if boss["kind"] == "purple":
         draw_purple_boss_strings(boss, cx, cy)
     if boss["kind"] == "orange":
@@ -5939,6 +6042,13 @@ def draw_boss_health():
         total = TEAL_GHOST_ROUNDS if active_boss.get("ghost_swarm") else TEAL_SWARM_ROUNDS  # 30 at 100, 25 at 150
         rounds_left = total - active_boss["swarm_round"] + (1 if any(e.get("swarm") for e in teal_enemies) else 0)
         draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"Dodge the teals! ({max(0, min(total, rounds_left))} left)")
+    elif active_boss["kind"] == "violet" and active_boss.get("phase") == "guard":
+        left = sum(len(group) for group in (red_enemies, green_enemies, blue_enemies, purple_enemies, orange_enemies,
+                                            yellow_enemies, teal_enemies, pink_enemies, violet_enemies))
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - kill the enemies! ({left} left)")
+    elif active_boss["kind"] == "violet" and active_boss.get("spikes"):
+        left = VIOLET_SPIKE_ROUNDS - active_boss["spikes"]["round"]
+        draw_block_health_bar(bar, fraction, (150, 215, 255), label=f"SHIELDED - dodge the spikes! ({left} left)")
     elif active_boss["kind"] == "pink" and active_boss.get("lines"):
         lines = active_boss["lines"]
         rounds_left = lines.get("rounds", PINK_LINES_ROUNDS) - lines["round"]
