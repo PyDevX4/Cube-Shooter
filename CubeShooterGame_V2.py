@@ -6,6 +6,7 @@ import random
 import time
 import atexit
 import base64
+import threading
 import json
 import zlib
 
@@ -2025,6 +2026,7 @@ def progress_state():
         "ability_slots": list(ability_slots),
         "ability_slot": selected_ability_slot,
         "gun_addon": gun_addon,
+        "theme": theme_personal,
         "best_wave": best_wave,
         "map": selected_map,
         "owned_maps": sorted(owned_maps),
@@ -2053,6 +2055,8 @@ def apply_progress(progress):
     g["shot_delay"] = g["main_game_shot_delay"] = GUN_SHOT_DELAYS[gun_level()]
     addon = progress.get("gun_addon")
     g["gun_addon"] = addon if any(a["key"] == addon and g[a["flag"]] for a in GUN_ADDONS) else None
+    g["theme_personal"] = progress.get("theme") if progress.get("theme") in THEMES else "None"
+    g["theme_refresh_timer"] = 0.0   # Ask the server for everyone's theme again
     g["best_wave"] = int(progress.get("best_wave", 0))
     g["owned_maps"] = set(FREE_MAPS) | {m for m in progress.get("owned_maps", []) if m in MAP_NAMES}
     g["selected_map"] = progress.get("map") if progress.get("map") in g["owned_maps"] else "Grass"
@@ -2739,10 +2743,178 @@ def draw_admin_panel():
         text = button_font.render(label, True, BLACK)
         screen.blit(text, text.get_rect(center=rect.center))
 
+# ---- Seasonal themes: decorations that float over the whole game ----
+# name: (what the decorations look like, their colours, the glow over the screen, the menu accent)
+THEMES = {
+    "None":        {"shape": None,      "colors": [],                                              "glow": None,             "accent": None},
+    "Halloween":   {"shape": "bat",     "colors": [(30, 26, 36), (60, 40, 80), (255, 140, 30)],    "glow": (60, 20, 80),     "accent": (255, 140, 30)},
+    "Fall":        {"shape": "leaf",    "colors": [(214, 108, 30), (186, 62, 28), (226, 168, 48)], "glow": (90, 45, 10),     "accent": (232, 140, 40)},
+    "Christmas":   {"shape": "bauble",  "colors": [(228, 46, 46), (60, 180, 80), (245, 245, 250)], "glow": (20, 60, 40),     "accent": (240, 70, 70)},
+    "Winter":      {"shape": "snow",    "colors": [(235, 245, 255), (200, 225, 250)],              "glow": (40, 70, 110),    "accent": (170, 215, 255)},
+    "Valentine's": {"shape": "heart",   "colors": [(255, 90, 140), (255, 160, 195), (240, 240, 250)], "glow": (95, 20, 50),  "accent": (255, 105, 165)},
+    "St. Patrick's": {"shape": "clover", "colors": [(70, 190, 90), (40, 150, 70), (245, 210, 80)], "glow": (20, 70, 30),     "accent": (80, 205, 100)},
+    "Spring":      {"shape": "petal",   "colors": [(255, 190, 215), (255, 235, 245), (150, 215, 130)], "glow": (60, 95, 60), "accent": (255, 170, 205)},
+    "Easter":      {"shape": "egg",     "colors": [(255, 215, 130), (170, 220, 255), (200, 175, 255), (180, 240, 190)], "glow": (70, 80, 110), "accent": (190, 175, 255)},
+    "Summer":      {"shape": "sun",     "colors": [(255, 225, 90), (255, 180, 60), (120, 220, 255)], "glow": (110, 80, 10),  "accent": (255, 205, 70)},
+    "Anniversary": {"shape": "confetti", "colors": [(255, 215, 80), (255, 255, 255), (120, 200, 255), (255, 120, 190)], "glow": (70, 60, 20), "accent": (255, 215, 90)},
+    "Thunderdome": {"shape": "bolt",    "colors": [(120, 210, 255), (255, 255, 255), (90, 120, 255)], "glow": (20, 40, 100), "accent": (120, 210, 255)},
+    "Bass Canyon": {"shape": "wave",    "colors": [(180, 90, 255), (90, 230, 230), (255, 90, 190)], "glow": (55, 15, 85),    "accent": (190, 110, 255)},
+    "Lost Lands":  {"shape": "frond",   "colors": [(90, 200, 110), (40, 150, 90), (210, 230, 120)], "glow": (25, 70, 45),    "accent": (110, 220, 130)},
+}
+THEME_NAMES = list(THEMES)
+THEME_PIECES = 60          # How many decorations float around
+theme_global = "None"      # What the owner set for everyone (from Supabase)
+theme_personal = "None"    # What the owner set for themselves (saved with their progress)
+theme_pieces = []
+theme_refresh_timer = 0.0
+
+def active_theme():
+    """Your own theme wins; otherwise the one the owner set for everyone."""
+    name = theme_personal if theme_personal and theme_personal != "None" else theme_global
+    return name if name in THEMES else "None"
+
+def theme_info():
+    return THEMES[active_theme()]
+
+def theme_accent(fallback):
+    """The theme's colour for menu bits, or the usual one."""
+    return theme_info()["accent"] or fallback
+
+def new_theme_piece(theme, at_top=False):
+    info = THEMES[theme]
+    return {"x": random.uniform(-40, WIDTH + 40), "y": random.uniform(-60, -10) if at_top else random.uniform(-60, HEIGHT),
+            "vx": random.uniform(-26, 26), "vy": random.uniform(24, 78), "size": random.uniform(14, 34),
+            "spin": random.uniform(-70, 70), "rot": random.uniform(0, 360), "sway": random.uniform(0, 6.3),
+            "color": random.choice(info["colors"]) if info["colors"] else WHITE}
+
+def update_theme_decorations(dt):
+    """Keep the floating decorations going, and pick up a new theme from the server now and then."""
+    global theme_pieces, theme_refresh_timer, theme_global
+    theme = active_theme()
+    if theme == "None":
+        theme_pieces = []
+        return
+    if len(theme_pieces) != THEME_PIECES or theme_pieces and theme_pieces[0].get("theme") != theme:
+        theme_pieces = [dict(new_theme_piece(theme), theme=theme) for _ in range(THEME_PIECES)]
+    for piece in theme_pieces:
+        piece["sway"] += dt
+        piece["x"] += (piece["vx"] + math.sin(piece["sway"] * 1.6) * 26) * dt
+        piece["y"] += piece["vy"] * dt
+        piece["rot"] += piece["spin"] * dt
+        if piece["y"] > HEIGHT + 60 or piece["x"] < -80 or piece["x"] > WIDTH + 80:
+            piece.update(new_theme_piece(theme, at_top=True), theme=theme)
+
+def refresh_global_theme(dt):
+    """Ask the server what theme everyone should see (at most once a minute, on its own thread)."""
+    global theme_refresh_timer
+    theme_refresh_timer -= dt
+    if theme_refresh_timer > 0 or online_session is None:
+        return
+    theme_refresh_timer = 60.0
+
+    def fetch():
+        name = cube_online.global_theme()
+        if name in THEMES:
+            globals()["theme_global"] = name
+    threading.Thread(target=fetch, name="cube-theme", daemon=True).start()
+
+def draw_theme_shape(surface, shape, x, y, size, rot, color):
+    """One decoration: each theme has its own little picture."""
+    a = math.radians(rot)
+    def point(dx, dy):
+        return (x + (dx * math.cos(a) - dy * math.sin(a)) * size, y + (dx * math.sin(a) + dy * math.cos(a)) * size)
+    if shape == "snow":
+        for k in range(3):
+            ang = a + k * math.pi / 3
+            pygame.draw.line(surface, color, (x - math.cos(ang) * size, y - math.sin(ang) * size),
+                             (x + math.cos(ang) * size, y + math.sin(ang) * size), 2)
+        pygame.draw.circle(surface, color, (x, y), max(1, size * 0.18))
+    elif shape == "leaf":
+        pygame.draw.polygon(surface, color, [point(0, -1), point(0.75, -0.1), point(0.35, 0.5), point(0, 1.05),
+                                             point(-0.35, 0.5), point(-0.75, -0.1)])
+        pygame.draw.line(surface, tuple(max(0, c - 60) for c in color), point(0, -0.6), point(0, 1.05), 2)
+    elif shape == "bat":
+        pygame.draw.polygon(surface, color, [point(0, 0.25), point(-0.5, -0.35), point(-0.95, 0.05), point(-1.15, -0.5),
+                                             point(-0.4, 0.55), point(0, 0.3), point(0.4, 0.55), point(1.15, -0.5),
+                                             point(0.95, 0.05), point(0.5, -0.35)])
+    elif shape == "bauble":
+        pygame.draw.circle(surface, color, (x, y), size * 0.75)
+        pygame.draw.circle(surface, (255, 255, 255), (x - size * 0.25, y - size * 0.3), max(1, size * 0.18))
+        pygame.draw.rect(surface, (220, 200, 120), (x - size * 0.18, y - size * 1.0, size * 0.36, size * 0.3))
+    elif shape == "heart":
+        pygame.draw.circle(surface, color, point(-0.35, -0.25), size * 0.45)
+        pygame.draw.circle(surface, color, point(0.35, -0.25), size * 0.45)
+        pygame.draw.polygon(surface, color, [point(-0.78, -0.05), point(0.78, -0.05), point(0, 1.0)])
+    elif shape == "clover":
+        for dx, dy in ((-0.45, -0.3), (0.45, -0.3), (0, -0.85), (0, 0.15)):
+            pygame.draw.circle(surface, color, point(dx, dy), size * 0.4)
+        pygame.draw.line(surface, (40, 120, 55), point(0, 0.2), point(0.15, 1.1), 2)
+    elif shape == "petal":
+        pygame.draw.ellipse(surface, color, pygame.Rect(0, 0, size * 1.5, size * 0.85).move(x - size * 0.75, y - size * 0.42))
+    elif shape == "egg":
+        pygame.draw.ellipse(surface, color, pygame.Rect(0, 0, size * 1.1, size * 1.5).move(x - size * 0.55, y - size * 0.75))
+        pygame.draw.line(surface, (255, 255, 255), point(-0.5, -0.1), point(0.5, -0.1), 2)
+        pygame.draw.line(surface, (255, 255, 255), point(-0.45, 0.3), point(0.45, 0.3), 2)
+    elif shape == "sun":
+        pygame.draw.circle(surface, color, (x, y), size * 0.55)
+        for k in range(8):
+            ang = a + k * math.pi / 4
+            pygame.draw.line(surface, color, (x + math.cos(ang) * size * 0.7, y + math.sin(ang) * size * 0.7),
+                             (x + math.cos(ang) * size * 1.15, y + math.sin(ang) * size * 1.15), 2)
+    elif shape == "confetti":
+        pygame.draw.polygon(surface, color, [point(-0.5, -0.25), point(0.5, -0.4), point(0.5, 0.3), point(-0.5, 0.45)])
+    elif shape == "bolt":
+        pygame.draw.polygon(surface, color, [point(0.1, -1.1), point(-0.5, 0.1), point(-0.05, 0.1),
+                                             point(-0.3, 1.1), point(0.55, -0.15), point(0.05, -0.15)])
+    elif shape == "wave":
+        for ring, width in ((1.0, 3), (0.65, 2), (0.3, 2)):
+            pygame.draw.circle(surface, color, (x, y), max(2, size * ring), width)
+    elif shape == "frond":
+        pygame.draw.line(surface, color, point(0, 1), point(0, -1), 3)
+        for k in range(4):
+            along = -0.8 + k * 0.5
+            pygame.draw.line(surface, color, point(0, along), point(0.7, along - 0.25), 2)
+            pygame.draw.line(surface, color, point(0, along), point(-0.7, along - 0.25), 2)
+
+def draw_theme_decorations():
+    """The theme's glow over the screen and its floating decorations, on top of everything else."""
+    info = theme_info()
+    if info["shape"] is None:
+        return
+    layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    if info["glow"]:  # A soft wash of the theme's colour around the edges
+        glow = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        pygame.draw.rect(glow, (*info["glow"], 105), glow.get_rect())
+        pygame.draw.ellipse(glow, (0, 0, 0, 0), pygame.Rect(-WIDTH // 8, -HEIGHT // 8, WIDTH * 5 // 4, HEIGHT * 5 // 4))
+        layer.blit(glow, (0, 0))
+    for piece in theme_pieces:
+        draw_theme_shape(layer, info["shape"], piece["x"], piece["y"], piece["size"], piece["rot"], piece["color"])
+    screen.blit(layer, (0, 0))
+
+def set_personal_theme(name):
+    global theme_personal
+    theme_personal = name if name in THEMES else "None"
+
+def set_global_theme(name):
+    """Owner only: the theme everyone sees. Saved in Supabase, so it sticks for every player."""
+    global theme_global, console_message, console_message_timer
+    theme_global = name if name in THEMES else "None"
+    if online_session is None:
+        console_message, console_message_timer = "Log in online to set everyone's theme", 3.0
+        return
+
+    def send():
+        try:
+            cube_online.set_global_theme(online_session, theme_global)
+        except Exception as err:
+            globals().update(console_message="Couldn't save the theme: %s" % err, console_message_timer=4.0)
+    threading.Thread(target=send, name="cube-theme-set", daemon=True).start()
+    console_message, console_message_timer = f"Everyone's theme: {theme_global}", 3.0
+
 # ---- Owner menu (` on the owner account): pages of everything the console used to do ----
 owner_menu_open = False
 owner_tab = "Players"
-OWNER_TABS = ("Players", "Gameplay", "Skins", "Upgrades")
+OWNER_TABS = ("Players", "Gameplay", "Themes", "Skins", "Upgrades")
 owner_fields = {"wave": "", "boss": ""}   # What is typed in the Gameplay boxes
 owner_focus = None                        # Which box is being typed in
 owner_scroll = 0.0
@@ -2770,6 +2942,11 @@ def owner_layout():
         layout["aimbot"] = pygame.Rect(body.x + 230, body.y + 300, 320, 52)
         layout["give"] = pygame.Rect(body.x + 230, body.y + 370, 320, 52)
         layout["respawn"] = pygame.Rect(body.x + 230, body.y + 440, 320, 52)
+    elif owner_tab == "Themes":
+        layout["everyone"] = [(name, pygame.Rect(body.x + 20 + (i % 2) * 230, body.y + 60 + (i // 2) * 50, 220, 42))
+                              for i, name in enumerate(THEME_NAMES)]
+        layout["just_me"] = [(name, pygame.Rect(body.x + 530 + (i % 2) * 230, body.y + 60 + (i // 2) * 50, 220, 42))
+                             for i, name in enumerate(THEME_NAMES)]
     elif owner_tab == "Skins":
         layout["skins"] = [(name, pygame.Rect(body.x + 16 + (i % 6) * 166, body.y + 16 + (i // 6) * 92, 150, 78))
                            for i, name in enumerate(shop_skins)]
@@ -2906,6 +3083,16 @@ def draw_owner_menu():
         draw_owner_row(layout["aimbot"], "Aimbot", on=aimbot_on)
         draw_owner_row(layout["give"], "Give everything")
         draw_owner_row(layout["respawn"], "Respawn everyone")
+    elif owner_tab == "Themes":
+        for heading, x in (("Everyone", body.x + 20), ("Just me", body.x + 530)):
+            text = coin_font.render(heading, True, (255, 222, 95))
+            screen.blit(text, (x, body.y + 16))
+        note = smaller_button_font.render("what every player's game shows", True, (170, 175, 182))
+        screen.blit(note, (body.x + 150, body.y + 24))
+        for name, rect in layout["everyone"]:
+            draw_owner_row(rect, name, on=name == theme_global)
+        for name, rect in layout["just_me"]:
+            draw_owner_row(rect, name, on=name == theme_personal)
     elif owner_tab == "Skins":
         for name, rect in layout["skins"]:
             wearing = name == current_skin
@@ -2979,6 +3166,15 @@ def handle_owner_menu_click(pos):
             admin_give_everything()
         elif layout["respawn"].collidepoint(pos):
             respawn_all_players(announce=True)
+    elif owner_tab == "Themes":
+        for name, rect in layout["everyone"]:
+            if rect.collidepoint(pos):
+                set_global_theme(name)
+                return
+        for name, rect in layout["just_me"]:
+            if rect.collidepoint(pos):
+                set_personal_theme(name)
+                return
     elif owner_tab == "Skins":
         for name, rect in layout["skins"]:
             if rect.collidepoint(pos):
@@ -11125,6 +11321,9 @@ while running:
         draw_admin_code()
     elif admin_panel_open:
         draw_admin_panel()
+    update_theme_decorations(dt if not game_paused else dt)
+    refresh_global_theme(dt)
+    draw_theme_decorations()
     if owner_menu_open:
         draw_owner_menu()
 

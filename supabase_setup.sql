@@ -61,3 +61,25 @@ alter table public.players add column if not exists is_owner boolean not null de
 revoke insert, update on public.players from authenticated, anon;
 grant insert (id, username, progress) on public.players to authenticated;
 grant update (username, progress, updated_at) on public.players to authenticated;
+
+-- The theme everyone's game shows (Halloween, Christmas...). Only owner accounts can change it.
+create table if not exists public.game_settings (
+  id int primary key default 1,
+  theme text not null default 'None',
+  updated_at timestamptz not null default now(),
+  constraint game_settings_one_row check (id = 1)
+);
+insert into public.game_settings (id, theme) values (1, 'None') on conflict (id) do nothing;
+alter table public.game_settings enable row level security;
+
+drop policy if exists "everyone reads the theme" on public.game_settings;
+create policy "everyone reads the theme" on public.game_settings
+  for select using (true);
+
+drop policy if exists "owners set the theme" on public.game_settings;
+create policy "owners set the theme" on public.game_settings
+  for update using (exists (select 1 from public.players p where p.id = auth.uid() and p.is_owner))
+  with check (exists (select 1 from public.players p where p.id = auth.uid() and p.is_owner));
+
+grant select on public.game_settings to anon, authenticated;
+grant update (theme, updated_at) on public.game_settings to authenticated;

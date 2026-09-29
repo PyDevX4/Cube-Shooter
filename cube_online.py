@@ -8,6 +8,7 @@
 
 Only the standard library is used, so the built .exe needs nothing extra.
 """
+import datetime
 import json
 import threading
 import time
@@ -84,6 +85,25 @@ class Session(object):
                 if self.on_new_refresh_token:
                     self.on_new_refresh_token(self.refresh_token)
             return self.access_token
+
+
+def _timestamp():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def global_theme():
+    """The theme the owner has set for everyone ("None" if there isn't one, or the table isn't there yet)."""
+    try:
+        rows = _request("GET", "/rest/v1/game_settings?id=eq.1&select=theme")
+    except (ServerError, OfflineError):
+        return None
+    return str(rows[0]["theme"]) if rows else None
+
+
+def set_global_theme(session, theme):
+    """Owner accounts only (the database checks): the theme every player's game shows."""
+    _request("PATCH", "/rest/v1/game_settings?id=eq.1", {"theme": str(theme), "updated_at": _timestamp()},
+             token=session.token(), extra_headers={"Prefer": "return=minimal"})
 
 
 def username_taken(username):
