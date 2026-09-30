@@ -2743,26 +2743,28 @@ def draw_admin_panel():
         text = button_font.render(label, True, BLACK)
         screen.blit(text, text.get_rect(center=rect.center))
 
-# ---- Seasonal themes: decorations that float over the whole game ----
-# name: (what the decorations look like, their colours, the glow over the screen, the menu accent)
+# ---- Seasonal themes: lights, corner decorations, a colour tint, and falling bits where they fit ----
+# falling: what drifts down (None for most), lights: bulb colours for a string of lights along the top,
+# corner: what sits in the corners, tint: a wash of colour over everything (real holidays and Summer only)
 THEMES = {
-    "None":        {"shape": None,      "colors": [],                                              "glow": None,             "accent": None},
-    "Halloween":   {"shape": "bat",     "colors": [(30, 26, 36), (60, 40, 80), (255, 140, 30)],    "glow": (60, 20, 80),     "accent": (255, 140, 30)},
-    "Fall":        {"shape": "leaf",    "colors": [(214, 108, 30), (186, 62, 28), (226, 168, 48)], "glow": (90, 45, 10),     "accent": (232, 140, 40)},
-    "Christmas":   {"shape": "bauble",  "colors": [(228, 46, 46), (60, 180, 80), (245, 245, 250)], "glow": (20, 60, 40),     "accent": (240, 70, 70)},
-    "Winter":      {"shape": "snow",    "colors": [(235, 245, 255), (200, 225, 250)],              "glow": (40, 70, 110),    "accent": (170, 215, 255)},
-    "Valentine's": {"shape": "heart",   "colors": [(255, 90, 140), (255, 160, 195), (240, 240, 250)], "glow": (95, 20, 50),  "accent": (255, 105, 165)},
-    "St. Patrick's": {"shape": "clover", "colors": [(70, 190, 90), (40, 150, 70), (245, 210, 80)], "glow": (20, 70, 30),     "accent": (80, 205, 100)},
-    "Spring":      {"shape": "petal",   "colors": [(255, 190, 215), (255, 235, 245), (150, 215, 130)], "glow": (60, 95, 60), "accent": (255, 170, 205)},
-    "Easter":      {"shape": "egg",     "colors": [(255, 215, 130), (170, 220, 255), (200, 175, 255), (180, 240, 190)], "glow": (70, 80, 110), "accent": (190, 175, 255)},
-    "Summer":      {"shape": "sun",     "colors": [(255, 225, 90), (255, 180, 60), (120, 220, 255)], "glow": (110, 80, 10),  "accent": (255, 205, 70)},
-    "Anniversary": {"shape": "confetti", "colors": [(255, 215, 80), (255, 255, 255), (120, 200, 255), (255, 120, 190)], "glow": (70, 60, 20), "accent": (255, 215, 90)},
-    "Thunderdome": {"shape": "bolt",    "colors": [(120, 210, 255), (255, 255, 255), (90, 120, 255)], "glow": (20, 40, 100), "accent": (120, 210, 255)},
-    "Bass Canyon": {"shape": "wave",    "colors": [(180, 90, 255), (90, 230, 230), (255, 90, 190)], "glow": (55, 15, 85),    "accent": (190, 110, 255)},
-    "Lost Lands":  {"shape": "frond",   "colors": [(90, 200, 110), (40, 150, 90), (210, 230, 120)], "glow": (25, 70, 45),    "accent": (110, 220, 130)},
+    "None":        {"falling": None,   "colors": [],                                                  "lights": None,                               "corner": None,      "tint": None,            "accent": None},
+    "Halloween":   {"falling": "bat",  "colors": [(30, 26, 36), (60, 40, 80)],                        "lights": [(255, 140, 30), (170, 90, 255)],   "corner": "pumpkin", "tint": (70, 25, 90),    "accent": (255, 140, 30)},
+    "Fall":        {"falling": "leaf", "colors": [(214, 108, 30), (186, 62, 28), (226, 168, 48)],     "lights": None,                               "corner": "leaves",  "tint": None,            "accent": (232, 140, 40)},
+    "Christmas":   {"falling": "snow", "colors": [(245, 250, 255), (215, 235, 255)],                  "lights": [(228, 46, 46), (60, 180, 80), (245, 235, 130)], "corner": "holly", "tint": (20, 70, 45), "accent": (240, 70, 70)},
+    "Winter":      {"falling": "snow", "colors": [(235, 245, 255), (200, 225, 250)],                  "lights": None,                               "corner": "icicle",  "tint": None,            "accent": (170, 215, 255)},
+    "Valentine's": {"falling": None,   "colors": [(255, 90, 140)],                                    "lights": [(255, 90, 150), (255, 190, 210)],  "corner": "heart",   "tint": (110, 25, 60),   "accent": (255, 105, 165)},
+    "St. Patrick's": {"falling": None, "colors": [(70, 190, 90)],                                     "lights": [(70, 200, 95), (245, 210, 80)],    "corner": "clover",  "tint": (20, 85, 40),    "accent": (80, 205, 100)},
+    "Spring":      {"falling": "petal", "colors": [(255, 190, 215), (255, 235, 245), (200, 245, 190)], "lights": None,                              "corner": "flower",  "tint": None,            "accent": (255, 170, 205)},
+    "Easter":      {"falling": None,   "colors": [(255, 215, 130), (170, 220, 255), (200, 175, 255)], "lights": [(255, 215, 130), (170, 220, 255), (200, 175, 255)], "corner": "egg", "tint": (80, 75, 120), "accent": (190, 175, 255)},
+    "Summer":      {"falling": None,   "colors": [(255, 225, 90)],                                    "lights": None,                               "corner": "sun",     "tint": (120, 85, 15),   "accent": (255, 205, 70)},
+    "Anniversary": {"falling": "confetti", "colors": [(255, 215, 80), (255, 255, 255), (120, 200, 255), (255, 120, 190)], "lights": [(255, 215, 80), (255, 255, 255)], "corner": "star", "tint": None, "accent": (255, 215, 90)},
+    "Thunderdome": {"falling": None,   "colors": [(120, 210, 255)],                                   "lights": [(120, 210, 255), (255, 255, 255)], "corner": "bolt",    "tint": None,            "accent": (120, 210, 255)},
+    "Bass Canyon": {"falling": None,   "colors": [(180, 90, 255)],                                    "lights": [(180, 90, 255), (90, 230, 230), (255, 90, 190)], "corner": "speaker", "tint": None, "accent": (190, 110, 255)},
+    "Lost Lands":  {"falling": None,   "colors": [(90, 200, 110)],                                    "lights": [(90, 200, 110), (210, 230, 120)],  "corner": "frond",   "tint": None,            "accent": (110, 220, 130)},
 }
 THEME_NAMES = list(THEMES)
-THEME_PIECES = 60          # How many decorations float around
+THEME_PIECES = 42          # How many falling decorations at a time
+THEME_TINT_ALPHA = 78      # How strong a holiday's colour wash is
 theme_global = "None"      # What the owner set for everyone (from Supabase)
 theme_personal = "None"    # What the owner set for themselves (saved with their progress)
 theme_pieces = []
@@ -2782,26 +2784,34 @@ def theme_accent(fallback):
 
 def new_theme_piece(theme, at_top=False):
     info = THEMES[theme]
+    if info["falling"] == "bat":  # Bats fly across the screen instead of falling
+        left = random.random() < 0.5
+        return {"x": -60 if left else WIDTH + 60, "y": random.uniform(40, HEIGHT - 120),
+                "vx": random.uniform(70, 140) * (1 if left else -1), "vy": random.uniform(-14, 14),
+                "size": random.uniform(16, 26), "spin": 0.0, "rot": 0.0, "sway": random.uniform(0, 6.3),
+                "color": random.choice(info["colors"])}
     return {"x": random.uniform(-40, WIDTH + 40), "y": random.uniform(-60, -10) if at_top else random.uniform(-60, HEIGHT),
-            "vx": random.uniform(-26, 26), "vy": random.uniform(24, 78), "size": random.uniform(14, 34),
+            "vx": random.uniform(-24, 24), "vy": random.uniform(26, 74), "size": random.uniform(12, 26),
             "spin": random.uniform(-70, 70), "rot": random.uniform(0, 360), "sway": random.uniform(0, 6.3),
             "color": random.choice(info["colors"]) if info["colors"] else WHITE}
 
 def update_theme_decorations(dt):
-    """Keep the floating decorations going, and pick up a new theme from the server now and then."""
-    global theme_pieces, theme_refresh_timer, theme_global
+    """Keep the falling decorations going (the themes that have them)."""
+    global theme_pieces
     theme = active_theme()
-    if theme == "None":
+    info = THEMES[theme]
+    if info["falling"] is None:
         theme_pieces = []
         return
-    if len(theme_pieces) != THEME_PIECES or theme_pieces and theme_pieces[0].get("theme") != theme:
-        theme_pieces = [dict(new_theme_piece(theme), theme=theme) for _ in range(THEME_PIECES)]
+    wanted = 14 if info["falling"] == "bat" else THEME_PIECES
+    if len(theme_pieces) != wanted or (theme_pieces and theme_pieces[0].get("theme") != theme):
+        theme_pieces = [dict(new_theme_piece(theme), theme=theme) for _ in range(wanted)]
     for piece in theme_pieces:
         piece["sway"] += dt
-        piece["x"] += (piece["vx"] + math.sin(piece["sway"] * 1.6) * 26) * dt
-        piece["y"] += piece["vy"] * dt
+        piece["x"] += (piece["vx"] + math.sin(piece["sway"] * 1.6) * (0 if info["falling"] == "bat" else 26)) * dt
+        piece["y"] += (piece["vy"] + (math.sin(piece["sway"] * 3) * 40 if info["falling"] == "bat" else 0)) * dt
         piece["rot"] += piece["spin"] * dt
-        if piece["y"] > HEIGHT + 60 or piece["x"] < -80 or piece["x"] > WIDTH + 80:
+        if piece["y"] > HEIGHT + 60 or piece["x"] < -90 or piece["x"] > WIDTH + 90:
             piece.update(new_theme_piece(theme, at_top=True), theme=theme)
 
 def refresh_global_theme(dt):
@@ -2837,10 +2847,6 @@ def draw_theme_shape(surface, shape, x, y, size, rot, color):
         pygame.draw.polygon(surface, color, [point(0, 0.25), point(-0.5, -0.35), point(-0.95, 0.05), point(-1.15, -0.5),
                                              point(-0.4, 0.55), point(0, 0.3), point(0.4, 0.55), point(1.15, -0.5),
                                              point(0.95, 0.05), point(0.5, -0.35)])
-    elif shape == "bauble":
-        pygame.draw.circle(surface, color, (x, y), size * 0.75)
-        pygame.draw.circle(surface, (255, 255, 255), (x - size * 0.25, y - size * 0.3), max(1, size * 0.18))
-        pygame.draw.rect(surface, (220, 200, 120), (x - size * 0.18, y - size * 1.0, size * 0.36, size * 0.3))
     elif shape == "heart":
         pygame.draw.circle(surface, color, point(-0.35, -0.25), size * 0.45)
         pygame.draw.circle(surface, color, point(0.35, -0.25), size * 0.45)
@@ -2855,20 +2861,11 @@ def draw_theme_shape(surface, shape, x, y, size, rot, color):
         pygame.draw.ellipse(surface, color, pygame.Rect(0, 0, size * 1.1, size * 1.5).move(x - size * 0.55, y - size * 0.75))
         pygame.draw.line(surface, (255, 255, 255), point(-0.5, -0.1), point(0.5, -0.1), 2)
         pygame.draw.line(surface, (255, 255, 255), point(-0.45, 0.3), point(0.45, 0.3), 2)
-    elif shape == "sun":
-        pygame.draw.circle(surface, color, (x, y), size * 0.55)
-        for k in range(8):
-            ang = a + k * math.pi / 4
-            pygame.draw.line(surface, color, (x + math.cos(ang) * size * 0.7, y + math.sin(ang) * size * 0.7),
-                             (x + math.cos(ang) * size * 1.15, y + math.sin(ang) * size * 1.15), 2)
     elif shape == "confetti":
         pygame.draw.polygon(surface, color, [point(-0.5, -0.25), point(0.5, -0.4), point(0.5, 0.3), point(-0.5, 0.45)])
     elif shape == "bolt":
         pygame.draw.polygon(surface, color, [point(0.1, -1.1), point(-0.5, 0.1), point(-0.05, 0.1),
                                              point(-0.3, 1.1), point(0.55, -0.15), point(0.05, -0.15)])
-    elif shape == "wave":
-        for ring, width in ((1.0, 3), (0.65, 2), (0.3, 2)):
-            pygame.draw.circle(surface, color, (x, y), max(2, size * ring), width)
     elif shape == "frond":
         pygame.draw.line(surface, color, point(0, 1), point(0, -1), 3)
         for k in range(4):
@@ -2876,19 +2873,127 @@ def draw_theme_shape(surface, shape, x, y, size, rot, color):
             pygame.draw.line(surface, color, point(0, along), point(0.7, along - 0.25), 2)
             pygame.draw.line(surface, color, point(0, along), point(-0.7, along - 0.25), 2)
 
+def draw_theme_lights(layer, colors):
+    """A string of lights hanging along the top of the screen, twinkling."""
+    t_now = pygame.time.get_ticks() / 1000.0
+    bulbs = 16
+    span = WIDTH / bulbs
+    points = [(i * span, 14 + math.sin(i * 0.9) * 10 + 14) for i in range(bulbs + 1)]
+    pygame.draw.lines(layer, (40, 44, 52, 230), False, points, 3)
+    for i in range(bulbs):
+        x = (i + 0.5) * span
+        y = 14 + math.sin((i + 0.5) * 0.9) * 10 + 22
+        color = colors[i % len(colors)]
+        glow = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(t_now * 2.4 + i * 0.7))
+        pygame.draw.line(layer, (40, 44, 52, 230), (x, y - 10), (x, y - 3), 3)
+        pygame.draw.circle(layer, (*color, int(60 * glow)), (x, y + 4), 17)
+        pygame.draw.circle(layer, (*color, int(150 + 100 * glow)), (x, y + 4), 8)
+        pygame.draw.circle(layer, (255, 255, 255, int(120 * glow)), (x - 2, y + 1), 3)
+
+def draw_theme_corner(layer, kind, x, y, flip_x, flip_y, t_now):
+    """One corner decoration, drawn facing into the screen."""
+    def at(dx, dy):
+        # dx is along the edge and dy is "up the screen", both turned to face into the corner we are in
+        return (x + dx * flip_x, y - dy * flip_y)
+    if kind == "pumpkin":
+        for offset, size in ((0, 34), (52, 24)):
+            cx, cy = at(38 + offset, -34 if offset == 0 else -24)
+            pygame.draw.circle(layer, (196, 92, 16), (cx, cy), size)
+            pygame.draw.circle(layer, (236, 128, 26), (cx, cy), size * 0.82)
+            pygame.draw.line(layer, (70, 120, 50), (cx, cy - size), (cx + 4, cy - size - 12), 5)
+            glow = 0.5 + 0.5 * math.sin(t_now * 3 + offset)
+            for ex in (-0.35, 0.35):  # Glowing eyes and a grin
+                pygame.draw.polygon(layer, (255, int(180 + 60 * glow), 40),
+                                    [(cx + ex * size - 5, cy - 4), (cx + ex * size + 5, cy - 4), (cx + ex * size, cy - 14)])
+            pygame.draw.arc(layer, (255, int(170 + 60 * glow), 40), pygame.Rect(cx - size * 0.6, cy - 2, size * 1.2, size * 0.8), 3.4, 6.0, 4)
+    elif kind == "leaves":
+        for i in range(7):
+            draw_theme_shape(layer, "leaf", *at(30 + i * 26, -22 - (i % 3) * 16), 17, 25 * i, [(214, 108, 30), (186, 62, 28), (226, 168, 48)][i % 3])
+    elif kind == "holly":
+        for i in range(6):
+            base = at(28 + i * 30, -30)
+            leaf = [(base[0], base[1] - 30), (base[0] + 22, base[1] - 8), (base[0], base[1] + 14), (base[0] - 22, base[1] - 8)]
+            pygame.draw.polygon(layer, (55, 165, 80), leaf)
+            pygame.draw.polygon(layer, (18, 80, 40), leaf, 3)
+            for berry in (-8, 8):
+                pygame.draw.circle(layer, (225, 45, 45), (base[0] + berry, base[1] - 6), 7)
+                pygame.draw.circle(layer, (255, 150, 150), (base[0] + berry - 2, base[1] - 9), 2)
+    elif kind == "icicle":
+        for i in range(9):
+            top = at(18 + i * 26, -2)
+            length = 30 + (i * 37 % 40)
+            pygame.draw.polygon(layer, (205, 235, 255), [(top[0] - 9, top[1]), (top[0] + 9, top[1]), (top[0], top[1] + length * flip_y)])
+            pygame.draw.polygon(layer, (245, 252, 255), [(top[0] - 3, top[1]), (top[0] + 4, top[1]), (top[0], top[1] + length * 0.7 * flip_y)])
+    elif kind == "heart":
+        for i, size in enumerate((30, 20, 24)):
+            draw_theme_shape(layer, "heart", *at(34 + i * 46, -30 - (i % 2) * 22), size, 0, [(255, 90, 140), (255, 160, 195)][i % 2])
+    elif kind == "clover":
+        for i in range(4):
+            draw_theme_shape(layer, "clover", *at(34 + i * 44, -34), 22, 12 * i, (70, 190, 90))
+        pygame.draw.circle(layer, (245, 210, 80), at(150, -26), 12)
+        pygame.draw.circle(layer, (255, 240, 170), at(147, -29), 5)
+    elif kind == "flower":
+        for i in range(5):
+            cx, cy = at(30 + i * 34, -26 - (i % 2) * 18)
+            for k in range(6):
+                ang = k * math.pi / 3 + i
+                pygame.draw.circle(layer, [(255, 190, 215), (255, 235, 245)][i % 2], (cx + math.cos(ang) * 11, cy + math.sin(ang) * 11), 8)
+            pygame.draw.circle(layer, (255, 225, 110), (cx, cy), 6)
+    elif kind == "egg":
+        for i, color in enumerate(((255, 215, 130), (170, 220, 255), (200, 175, 255), (180, 240, 190))):
+            draw_theme_shape(layer, "egg", *at(30 + i * 38, -34), 22, (-1) ** i * 12, color)
+    elif kind == "sun":
+        cx, cy = at(74, -74)
+        for k in range(12):
+            ang = k * math.pi / 6 + t_now * 0.35
+            pygame.draw.line(layer, (255, 205, 70, 220), (cx + math.cos(ang) * 54, cy + math.sin(ang) * 54),
+                             (cx + math.cos(ang) * 82, cy + math.sin(ang) * 82), 6)
+        pygame.draw.circle(layer, (255, 225, 90), (cx, cy), 50)
+        pygame.draw.circle(layer, (255, 245, 170), (cx, cy), 36)
+    elif kind == "star":
+        for i in range(5):
+            cx, cy = at(30 + i * 40, -30 - (i % 2) * 26)
+            twinkle = 0.6 + 0.4 * math.sin(t_now * 3 + i)
+            points = []
+            for k in range(10):
+                radius = (16 if k % 2 == 0 else 7) * twinkle
+                ang = k * math.pi / 5 - math.pi / 2
+                points.append((cx + math.cos(ang) * radius, cy + math.sin(ang) * radius))
+            pygame.draw.polygon(layer, (255, 215, 80), points)
+    elif kind == "bolt":
+        for i in range(3):
+            draw_theme_shape(layer, "bolt", *at(40 + i * 46, -46), 30, 0, (120, 210, 255))
+        pygame.draw.circle(layer, (120, 210, 255, int(60 + 60 * (0.5 + 0.5 * math.sin(t_now * 6)))), at(90, -46), 60)
+    elif kind == "speaker":
+        cx, cy = at(60, -70)
+        box = pygame.Rect(0, 0, 76, 120)
+        box.center = (cx, cy)
+        pygame.draw.rect(layer, (30, 32, 42), box, border_radius=10)
+        pygame.draw.rect(layer, (120, 90, 200), box, 3, border_radius=10)
+        for cone, radius in ((-28, 22), (26, 14)):
+            beat = 1 + 0.12 * math.sin(t_now * 6 + cone)
+            pygame.draw.circle(layer, (90, 230, 230), (cx, cy + cone), radius * beat, 3)
+            pygame.draw.circle(layer, (180, 90, 255), (cx, cy + cone), radius * 0.45 * beat)
+    elif kind == "frond":
+        for i in range(4):
+            draw_theme_shape(layer, "frond", *at(34 + i * 40, -44), 34, 20 * i - 30, [(90, 200, 110), (40, 150, 90)][i % 2])
+
 def draw_theme_decorations():
-    """The theme's glow over the screen and its floating decorations, on top of everything else."""
+    """The theme's tint, its corner decorations, its string lights and anything falling - over everything else."""
     info = theme_info()
-    if info["shape"] is None:
+    if active_theme() == "None":
         return
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    if info["glow"]:  # A soft wash of the theme's colour around the edges
-        glow = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        pygame.draw.rect(glow, (*info["glow"], 105), glow.get_rect())
-        pygame.draw.ellipse(glow, (0, 0, 0, 0), pygame.Rect(-WIDTH // 8, -HEIGHT // 8, WIDTH * 5 // 4, HEIGHT * 5 // 4))
-        layer.blit(glow, (0, 0))
+    if info["tint"]:  # A wash of the holiday's colour over the whole screen
+        layer.fill((*info["tint"], THEME_TINT_ALPHA))
+    t_now = pygame.time.get_ticks() / 1000.0
+    if info["corner"]:
+        for x, y, fx, fy in ((0, HEIGHT, 1, -1), (WIDTH, HEIGHT, -1, -1), (0, 0, 1, 1), (WIDTH, 0, -1, 1)):
+            draw_theme_corner(layer, info["corner"], x, y, fx, fy, t_now)
+    if info["lights"]:
+        draw_theme_lights(layer, info["lights"])
     for piece in theme_pieces:
-        draw_theme_shape(layer, info["shape"], piece["x"], piece["y"], piece["size"], piece["rot"], piece["color"])
+        draw_theme_shape(layer, info["falling"], piece["x"], piece["y"], piece["size"], piece["rot"], piece["color"])
     screen.blit(layer, (0, 0))
 
 def set_personal_theme(name):
