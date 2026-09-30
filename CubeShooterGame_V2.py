@@ -169,7 +169,8 @@ owned_skins = {
     "solar": False,
     "pumpkin": False,
     "metal": False,
-    "neon": False
+    "neon": False,
+    "x": False
 }
 
 skin_colors = {
@@ -193,14 +194,15 @@ skin_colors = {
     "pumpkin": (255, 130, 25),     # Halloween skin: not in the Shop yet
     "metal": (170, 178, 190),      # Brushed steel
     "neon": (70, 245, 235),        # Glowing circuit lines
+    "x": (245, 245, 250),          # The jagged X badge on black
     # rainbow handled separately
     # galaxy handled separately
 }
 
 # List of skins in shop order
 shop_skins = ["white", "black", "red", "galaxy", "orange", "yellow", "green", "blue", "purple", "lava", "water", "rainbow",
-              "teal", "pink", "violet", "navy", "rust", "aquamarine", "solar", "pumpkin", "metal", "neon"]
-SKINS_NOT_IN_SHOP = ("white", "black", "pumpkin")  # Pumpkin is saved for Halloween (Give Everything still unlocks it)
+              "teal", "pink", "violet", "navy", "rust", "aquamarine", "solar", "pumpkin", "metal", "neon", "x"]
+SKINS_NOT_IN_SHOP = ("white", "black", "pumpkin", "x")  # Kept out of the Shop for now (Give Everything still unlocks them)
 
 current_skin = "white"
 
@@ -1037,15 +1039,46 @@ def create_neon_skin_surface(size=150):
                 pygame.draw.circle(surf, (190, 255, 250), (x, y + drop), 4)
     return surf
 
+def create_x_badge_surface(size=150):
+    """A jagged X badge on scuffed black, in the style of the logo you sent: two forked arms crossing,
+    with a lightning streak through the middle."""
+    surf = pygame.Surface((size, size))
+    surf.fill((16, 16, 18))
+    rng = random.Random(23)
+    for _ in range(140):  # Scuffed paint
+        x, y = rng.randrange(size), rng.randrange(size)
+        shade = rng.randint(24, 46)
+        pygame.draw.circle(surf, (shade, shade, shade + 2), (x, y), rng.randint(1, 4))
+    white = (246, 246, 250)
+    c = size / 2
+    u = size / 100.0          # Everything below is in hundredths of the tile
+
+    def arm(flip):
+        """One thick diagonal arm with forked, notched ends."""
+        points = [(-38, -44), (-22, -44), (-12, -30), (0, -12), (12, -30), (22, -44), (38, -44),
+                  (38, -30), (22, -30), (10, -10), (10, 10), (22, 30), (38, 30), (38, 44),
+                  (22, 44), (12, 30), (0, 12), (-12, 30), (-22, 44), (-38, 44), (-38, 30),
+                  (-22, 30), (-10, 10), (-10, -10), (-22, -30), (-38, -30)]
+        return [(c + x * u * flip, c + y * u) for x, y in points]
+
+    pygame.draw.polygon(surf, white, arm(1))
+    pygame.draw.polygon(surf, (16, 16, 18), [(c - 46 * u, c - 6 * u), (c + 46 * u, c - 6 * u),
+                                             (c + 46 * u, c + 6 * u), (c - 46 * u, c + 6 * u)])
+    pygame.draw.polygon(surf, white, [(c - 46 * u, c - 30 * u), (c - 20 * u, c - 14 * u), (c - 26 * u, c - 6 * u),
+                                      (c + 46 * u, c + 26 * u), (c + 18 * u, c + 10 * u), (c + 24 * u, c + 2 * u)])
+    return surf
+
 solar_texture = create_solar_surface()
+x_badge_texture = create_x_badge_surface()
 metal_skin_texture = create_metal_skin_surface()
 neon_skin_texture = create_neon_skin_surface()
 pumpkin_texture = create_pumpkin_surface()
 SKIN_TEXTURES = {"galaxy": galaxy_texture, "lava": lava_texture, "water": water_texture,
                  "solar": solar_texture, "pumpkin": pumpkin_texture,
-                 "metal": metal_skin_texture, "neon": neon_skin_texture}
+                 "metal": metal_skin_texture, "neon": neon_skin_texture, "x": x_badge_texture}
 SKIN_GLOWS = {"galaxy": (100, 150, 255), "lava": (255, 69, 0), "water": (0, 150, 255), "black": (110, 110, 130),
-              "solar": (255, 225, 70), "pumpkin": (255, 140, 30), "metal": (190, 200, 215), "neon": (70, 245, 235)}
+              "solar": (255, 225, 70), "pumpkin": (255, 140, 30), "metal": (190, 200, 215), "neon": (70, 245, 235),
+              "x": (210, 215, 230)}
 
 # ---- Animated skins: little effects that stay on the cube's face (pre-drawn frames that loop) ----
 SKIN_ANIM_FRAMES = 40
@@ -1066,7 +1099,7 @@ def _make_skin_frames(skin):
         blobs = [(rng.uniform(10, size - 10), rng.uniform(10, size - 10), rng.uniform(8, 16), rng.uniform(0, 2 * math.pi)) for _ in range(5)]
     elif skin in ("solar", "pumpkin"):
         sparks = [(rng.uniform(0, 2 * math.pi), rng.uniform(0.3, 1.0)) for _ in range(9)]
-    elif skin == "metal":
+    elif skin in ("metal", "x"):
         glints = [(rng.uniform(0, 1), rng.uniform(0.6, 1.4)) for _ in range(3)]
     elif skin == "neon":
         pulses = [(rng.uniform(0, 1), rng.uniform(0, size)) for _ in range(6)]
@@ -1120,8 +1153,8 @@ def _make_skin_frames(skin):
                 colour = (255, 235, 120) if skin == "solar" else (255, 170, 60)
                 pygame.draw.circle(surf, (*colour, 220), (x, y), 3)
                 pygame.draw.circle(surf, (255, 255, 235, 150), (x, y), 1.5)
-        elif skin == "metal":
-            # A bright sheen sweeping across the plate
+        elif skin in ("metal", "x"):
+            # A bright sheen sweeping across the plate (or the badge)
             surf.blit(base, (0, 0))
             shine = pygame.Surface((size, size), pygame.SRCALPHA)
             for start, speed in glints:
@@ -1628,7 +1661,7 @@ def draw_game_buttons():
 
 # ---- Shops ----
 SKIN_PRICES = {"white": 0, "black": 0, "rainbow": 1200, "galaxy": 1500, "lava": 1500, "water": 1500,
-               "solar": 1200, "pumpkin": 1200, "metal": 1200, "neon": 1200}  # Basic colours cost 800
+               "solar": 1200, "pumpkin": 1200, "metal": 1200, "neon": 1200, "x": 1200}  # Basic colours cost 800
 SKIN_CARD_W, SKIN_CARD_H, SKIN_CARD_GAP, SKIN_COLUMNS = 220, 250, 26, 4
 
 def card_rects(i, viewport, scroll):
@@ -2758,9 +2791,9 @@ THEMES = {
     "Easter":      {"falling": None,   "colors": [(255, 215, 130), (170, 220, 255), (200, 175, 255)], "lights": [(255, 215, 130), (170, 220, 255), (200, 175, 255)], "corner": "egg", "tint": (80, 75, 120), "accent": (190, 175, 255)},
     "Summer":      {"falling": None,   "colors": [(255, 225, 90)],                                    "lights": None,                               "corner": "sun",     "tint": (120, 85, 15),   "accent": (255, 205, 70)},
     "Anniversary": {"falling": "confetti", "colors": [(255, 215, 80), (255, 255, 255), (120, 200, 255), (255, 120, 190)], "lights": [(255, 215, 80), (255, 255, 255)], "corner": "star", "tint": None, "accent": (255, 215, 90)},
-    "Thunderdome": {"falling": None,   "colors": [(120, 210, 255)],                                   "lights": [(120, 210, 255), (255, 255, 255)], "corner": "bolt",    "tint": None,            "accent": (120, 210, 255)},
-    "Bass Canyon": {"falling": None,   "colors": [(180, 90, 255)],                                    "lights": [(180, 90, 255), (90, 230, 230), (255, 90, 190)], "corner": "speaker", "tint": None, "accent": (190, 110, 255)},
-    "Lost Lands":  {"falling": None,   "colors": [(90, 200, 110)],                                    "lights": [(90, 200, 110), (210, 230, 120)],  "corner": "frond",   "tint": None,            "accent": (110, 220, 130)},
+    "Thunderdome": {"falling": None,   "colors": [(120, 210, 255)],                                   "lights": None,                               "corner": None,      "tint": (10, 20, 60),    "accent": (120, 210, 255), "scene": "thunderdome"},
+    "Bass Canyon": {"falling": None,   "colors": [(180, 90, 255)],                                    "lights": None,                               "corner": None,      "tint": (30, 10, 50),    "accent": (190, 110, 255), "scene": "bass_canyon"},
+    "Lost Lands":  {"falling": None,   "colors": [(90, 200, 110)],                                    "lights": None,                               "corner": None,      "tint": (12, 40, 26),    "accent": (110, 220, 130), "scene": "lost_lands"},
 }
 THEME_NAMES = list(THEMES)
 THEME_PIECES = 42          # How many falling decorations at a time
@@ -2978,20 +3011,145 @@ def draw_theme_corner(layer, kind, x, y, flip_x, flip_y, t_now):
         for i in range(4):
             draw_theme_shape(layer, "frond", *at(34 + i * 40, -44), 34, 20 * i - 30, [(90, 200, 110), (40, 150, 90)][i % 2])
 
+def draw_laser_beam(layer, x1, y1, x2, y2, color, width=4):
+    """One beam: thin and see-through, so it never gets in the way of the game."""
+    pygame.draw.line(layer, (*color, 26), (x1, y1), (x2, y2), width * 3)
+    pygame.draw.line(layer, (*color, 95), (x1, y1), (x2, y2), width)
+    pygame.draw.line(layer, (255, 255, 255, 120), (x1, y1), (x2, y2), 1)
+    pygame.draw.circle(layer, (*color, 70), (x1, y1), width * 2)   # Glow at the emitter
+
+def draw_fan_of_lasers(layer, t_now, x, y, colors, beams=5, spread=1.25, aim=math.pi / 2, speed=0.7):
+    """A fan of beams sweeping back and forth from one spot."""
+    swing = math.sin(t_now * speed) * 0.5
+    for i in range(beams):
+        share = (i / (beams - 1)) - 0.5 if beams > 1 else 0.0
+        angle = aim + share * spread + swing
+        far = math.hypot(WIDTH, HEIGHT)
+        draw_laser_beam(layer, x, y, x + math.cos(angle) * far, y + math.sin(angle) * far,
+                        colors[i % len(colors)], 3)
+
+def draw_neon_frame(layer, t_now, colors):
+    """A glowing neon border around the screen, with the colours crawling around it."""
+    for i, inset in enumerate((6, 18, 30)):
+        color = colors[i % len(colors)]
+        pulse = 0.5 + 0.5 * math.sin(t_now * 2.2 - i)
+        rect = pygame.Rect(inset, inset, WIDTH - inset * 2, HEIGHT - inset * 2)
+        pygame.draw.rect(layer, (*color, int(50 + 90 * pulse)), rect, 5 - i, border_radius=18)
+
+def draw_neon_grid(layer, t_now, color):
+    """A neon floor grid running off toward the top of the screen."""
+    horizon = HEIGHT * 0.34
+    for i in range(-9, 10):  # Lines fanning out from the middle
+        x = WIDTH / 2 + i * WIDTH / 9
+        pygame.draw.line(layer, (*color, 60), (WIDTH / 2 + i * 40, horizon), (x, HEIGHT), 2)
+    step = 0.0
+    y = horizon
+    while y < HEIGHT:
+        pygame.draw.line(layer, (*color, 55), (0, y), (WIDTH, y), 2)
+        step += 1
+        y = horizon + ((step + (t_now * 0.8) % 1) ** 2.1) * 9
+
+def draw_truss(layer, t_now, y, colors):
+    """A lighting truss across the top: metal lattice, hanging lights and laser heads."""
+    top, height = y, 44
+    pygame.draw.rect(layer, (52, 56, 66, 255), (0, top, WIDTH, height))
+    pygame.draw.rect(layer, (96, 102, 116, 255), (0, top, WIDTH, height), 3)
+    for x in range(0, WIDTH, 46):  # Lattice
+        pygame.draw.line(layer, (120, 126, 140, 220), (x, top + height), (x + 46, top), 3)
+        pygame.draw.line(layer, (120, 126, 140, 220), (x, top), (x + 46, top + height), 3)
+    pygame.draw.line(layer, (150, 156, 170, 255), (0, top + 6), (WIDTH, top + 6), 3)
+    pygame.draw.line(layer, (150, 156, 170, 255), (0, top + height - 6), (WIDTH, top + height - 6), 3)
+    for i in range(12):  # Lights hanging off it
+        x = (i + 0.5) * WIDTH / 12
+        color = colors[i % len(colors)]
+        glow = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(t_now * 3 + i * 0.8))
+        pygame.draw.rect(layer, (36, 38, 48, 255), (x - 9, top + height, 18, 14))
+        pygame.draw.circle(layer, (*color, int(70 * glow)), (x, top + height + 20), 20)
+        pygame.draw.circle(layer, (*color, int(160 + 90 * glow)), (x, top + height + 18), 8)
+        if i % 4 == 1:  # Every few is a beam pointing down into the crowd
+            angle = math.pi / 2 + math.sin(t_now * 0.9 + i) * 0.5
+            far = HEIGHT
+            draw_laser_beam(layer, x, top + height + 18, x + math.cos(angle) * far, top + math.sin(angle) * far, color, 3)
+
+def draw_speaker_stack(layer, t_now, x, y, scale, colors):
+    """A stack of speaker boxes with cones thumping along to the beat."""
+    box_w, box_h = int(86 * scale), int(64 * scale)
+    for row in range(3):
+        box = pygame.Rect(x - box_w // 2, y - (row + 1) * (box_h + 4), box_w, box_h)
+        pygame.draw.rect(layer, (26, 28, 38, 255), box, border_radius=6)
+        pygame.draw.rect(layer, (*colors[row % len(colors)], 200), box, 3, border_radius=6)
+        beat = 1 + 0.14 * math.sin(t_now * 6 + row)
+        for cone_x in (-box_w * 0.24, box_w * 0.24):
+            centre = (box.centerx + cone_x, box.centery)
+            pygame.draw.circle(layer, (70, 74, 90, 255), centre, box_h * 0.3 * beat)
+            pygame.draw.circle(layer, (*colors[(row + 1) % len(colors)], 220), centre, box_h * 0.3 * beat, 3)
+            pygame.draw.circle(layer, (*colors[row % len(colors)], 160), centre, box_h * 0.12 * beat)
+
+def draw_dino(layer, x, y, scale, color, facing=1):
+    """A chunky dinosaur silhouette (Lost Lands)."""
+    def at(dx, dy):
+        return (x + dx * scale * facing, y - dy * scale)
+    body = [at(-52, 10), at(-30, 30), at(-4, 34), at(16, 46), at(30, 64), at(46, 66), at(58, 56), at(56, 40),
+            at(40, 30), at(20, 26), at(4, 14), at(-14, 6), at(-40, -2), at(-64, -6), at(-84, 4), at(-96, 18),
+            at(-86, 20), at(-70, 12), at(-56, 14)]
+    pygame.draw.polygon(layer, color, body)
+    pygame.draw.polygon(layer, (*color, 255), [at(-10, 6), at(2, -18), at(12, -18), at(4, 6)])     # Legs
+    pygame.draw.polygon(layer, color, [at(20, 24), at(34, -16), at(46, -16), at(34, 24)])
+    pygame.draw.polygon(layer, color, [at(-96, 18), at(-116, 26), at(-118, 14), at(-100, 12)])     # Snout
+    pygame.draw.circle(layer, (255, 240, 160), at(-92, 24), max(2, 4 * scale))                     # Eye
+
+def draw_theme_scene(layer, scene, t_now):
+    """The big set-ups: Thunderdome's neon and lasers, Bass Canyon's stage, Lost Lands' dinosaurs."""
+    if scene == "thunderdome":
+        neon = [(120, 210, 255), (90, 120, 255), (255, 255, 255)]
+        draw_neon_grid(layer, t_now, (90, 150, 255))
+        draw_neon_frame(layer, t_now, neon)
+        draw_fan_of_lasers(layer, t_now, 0, 0, neon, beams=3, spread=1.1, aim=0.9, speed=0.8)
+        draw_fan_of_lasers(layer, t_now, WIDTH, 0, neon, beams=3, spread=1.1, aim=math.pi - 0.9, speed=-0.8)
+        draw_fan_of_lasers(layer, t_now, WIDTH / 2, HEIGHT, neon, beams=5, spread=2.2, aim=-math.pi / 2, speed=0.45)
+        for i in range(7):  # Neon bolts pulsing around the edges
+            x = (i + 0.5) * WIDTH / 7
+            flash = 0.5 + 0.5 * math.sin(t_now * 5 + i * 1.3)
+            draw_theme_shape(layer, "bolt", x, HEIGHT - 60, 26 + 6 * flash, 0, (120, 210, 255))
+            draw_theme_shape(layer, "bolt", x, 70, 22 + 6 * flash, 180, (150, 190, 255))
+    elif scene == "bass_canyon":
+        colors = [(180, 90, 255), (90, 230, 230), (255, 90, 190)]
+        draw_truss(layer, t_now, 0, colors)
+        draw_fan_of_lasers(layer, t_now, 60, 62, colors, beams=3, spread=1.0, aim=1.1, speed=0.6)
+        draw_fan_of_lasers(layer, t_now, WIDTH - 60, 62, colors, beams=3, spread=1.0, aim=math.pi - 1.1, speed=-0.6)
+        for x, scale in ((90, 1.0), (WIDTH - 90, 1.0), (250, 0.7), (WIDTH - 250, 0.7)):
+            draw_speaker_stack(layer, t_now, x, HEIGHT, scale, colors)
+        pygame.draw.rect(layer, (22, 14, 34, 220), (0, HEIGHT - 26, WIDTH, 26))   # Stage lip
+        pygame.draw.rect(layer, (*colors[0], 200), (0, HEIGHT - 26, WIDTH, 5))
+    elif scene == "lost_lands":
+        jungle = [(90, 200, 110), (40, 150, 90), (210, 230, 120)]
+        for x, facing, scale, color in ((150, 1, 1.0, (18, 60, 38)), (WIDTH - 140, -1, 0.85, (14, 50, 32))):
+            draw_dino(layer, x, HEIGHT - 20, scale, color, facing)
+        draw_fan_of_lasers(layer, t_now, 40, HEIGHT - 40, jungle, beams=3, spread=0.9, aim=-1.0, speed=0.5)
+        draw_fan_of_lasers(layer, t_now, WIDTH - 40, HEIGHT - 40, jungle, beams=3, spread=0.9, aim=-math.pi + 1.0, speed=-0.5)
+        for i in range(6):  # Jungle fronds along the top and bottom
+            x = (i + 0.5) * WIDTH / 6
+            draw_theme_shape(layer, "frond", x, 46, 34, 180 + math.sin(t_now + i) * 8, jungle[i % 2])
+            draw_theme_shape(layer, "frond", x + 40, HEIGHT - 56, 30, math.sin(t_now * 0.8 + i) * 8, jungle[(i + 1) % 2])
+
 def draw_theme_decorations():
     """The theme's tint, its corner decorations, its string lights and anything falling - over everything else."""
     info = theme_info()
     if active_theme() == "None":
         return
+    if info["tint"]:  # A wash of the holiday's colour (a darker one for the festival themes), under everything
+        tint = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        tint.fill((*info["tint"], 130 if info.get("scene") else THEME_TINT_ALPHA))
+        screen.blit(tint, (0, 0))
     layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    if info["tint"]:  # A wash of the holiday's colour over the whole screen
-        layer.fill((*info["tint"], THEME_TINT_ALPHA))
     t_now = pygame.time.get_ticks() / 1000.0
     if info["corner"]:
         for x, y, fx, fy in ((0, HEIGHT, 1, -1), (WIDTH, HEIGHT, -1, -1), (0, 0, 1, 1), (WIDTH, 0, -1, 1)):
             draw_theme_corner(layer, info["corner"], x, y, fx, fy, t_now)
     if info["lights"]:
         draw_theme_lights(layer, info["lights"])
+    if info.get("scene"):
+        draw_theme_scene(layer, info["scene"], t_now)
     for piece in theme_pieces:
         draw_theme_shape(layer, info["falling"], piece["x"], piece["y"], piece["size"], piece["rot"], piece["color"])
     screen.blit(layer, (0, 0))
