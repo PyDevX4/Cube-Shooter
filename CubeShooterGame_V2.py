@@ -7388,8 +7388,18 @@ def handle_settings_content_event(event):
         globals()["themes_on"] = not themes_on
     elif SETTINGS_SOUNDS_BUTTON.collidepoint(pos):
         globals()["sounds_on"] = not sounds_on
+        if not sounds_on:
+            try:
+                pygame.mixer.stop()   # Cut anything already playing
+            except pygame.error:
+                pass
     elif SETTINGS_MUSIC_BUTTON.collidepoint(pos):
         globals()["music_on"] = not music_on
+        if not music_on:
+            try:
+                pygame.mixer.music.stop()
+            except pygame.error:
+                pass
     elif SETTINGS_DELETE_DATA_BUTTON.collidepoint(pos):
         settings_confirm = "data"
     elif SETTINGS_DELETE_ACCOUNT_BUTTON.collidepoint(pos):
@@ -8256,12 +8266,36 @@ def _build_pvp_arena(seed=4077, style="corners"):
                     walls.append(pygame.Rect(cx - 300 if side == 1 else cx + 260, y - 110, 40, 220))
         for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):   # Little blocks inside the ring
             walls.append(pygame.Rect(cx + sx * 120 - 30, cy + sy * 120 - 30, 60, 60))
-    else:                       # Long lanes crossing the middle, with cover at the ends
+    elif style == "lanes":      # Long lanes crossing the middle, with cover at the ends
         for lane in (-1, 1):
             walls.append(pygame.Rect(cx - 420, cy + lane * 150 - 20, 840, 40))
             walls.append(pygame.Rect(cx + lane * 150 - 20, cy - 420, 40, 840))
         for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
             walls.append(pygame.Rect(cx + sx * 330 - 40, cy + sy * 330 - 40, 80, 80))
+    elif style == "pinwheel":   # Four long arms spinning out of the middle, so you always round a corner
+        for turn in range(4):
+            if turn == 0:
+                walls.append(pygame.Rect(cx - 40, cy - 420, 40, 340))
+                walls.append(pygame.Rect(cx - 40, cy - 120, 300, 40))
+            elif turn == 1:
+                walls.append(pygame.Rect(cx, cy + 80, 40, 340))
+                walls.append(pygame.Rect(cx - 260, cy + 80, 300, 40))
+            elif turn == 2:
+                walls.append(pygame.Rect(cx + 80, cy - 40, 340, 40))
+                walls.append(pygame.Rect(cx + 380, cy - 40, 40, 300))
+            else:
+                walls.append(pygame.Rect(cx - 420, cy, 340, 40))
+                walls.append(pygame.Rect(cx - 420, cy - 260, 40, 300))
+    else:                       # A maze of short staggered walls - lots of little rooms
+        for row in range(-2, 3):
+            for col in range(-2, 3):
+                if row == 0 and col == 0:
+                    continue      # Leave the middle open
+                x, y = cx + col * 230, cy + row * 230
+                if (row + col) % 2 == 0:
+                    walls.append(pygame.Rect(x - 90, y - 20, 180, 40))
+                else:
+                    walls.append(pygame.Rect(x - 20, y - 90, 40, 180))
     def clear(rect):
         grown = rect.inflate(160, 160)
         if any(grown.collidepoint(px, py) or math.hypot(grown.centerx - px, grown.centery - py) < 260 for px, py in spawns):
@@ -8297,7 +8331,8 @@ def _build_pvp_arena(seed=4077, style="corners"):
     return walls, crates, pillars, spawns
 
 # The three arenas. One of them is picked at random for every round.
-PVP_ARENAS = [_build_pvp_arena(4077, "corners"), _build_pvp_arena(8125, "ring"), _build_pvp_arena(9311, "lanes")]
+PVP_ARENAS = [_build_pvp_arena(4077, "corners"), _build_pvp_arena(8125, "ring"), _build_pvp_arena(9311, "lanes"),
+              _build_pvp_arena(5204, "pinwheel"), _build_pvp_arena(6618, "rooms")]
 pvp_arena = 0
 PVP_WALL_PIECES, PVP_CRATES, PVP_PILLARS, PVP_SPAWNS = PVP_ARENAS[0]
 PVP_WALLS = PVP_WALL_PIECES + PVP_CRATES + PVP_PILLARS   # Everything solid
