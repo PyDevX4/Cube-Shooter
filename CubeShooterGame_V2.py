@@ -8224,6 +8224,7 @@ pvp_barrier_on = False         # Setting: the barrier closes in, and resets when
 PVP_BARRIER_TIME = 45.0        # Seconds from the full map down to...
 PVP_BARRIER_SMALLEST = 0.3     # ...this much of it
 pvp_barrier = 1.0              # How much of the map you can play in right now
+pvp_arena_choice = -1          # Setting: -1 is Random (a different arena every round), else that arena
 pvp_first_to_focused = False
 pvp_settings_timer = 0.0
 pvp_send_timer = 0.0
@@ -8331,6 +8332,7 @@ def _build_pvp_arena(seed=4077, style="corners"):
     return walls, crates, pillars, spawns
 
 # The three arenas. One of them is picked at random for every round.
+PVP_ARENA_NAMES = ["Corners", "Ring", "Lanes", "Pinwheel", "Rooms"]
 PVP_ARENAS = [_build_pvp_arena(4077, "corners"), _build_pvp_arena(8125, "ring"), _build_pvp_arena(9311, "lanes"),
               _build_pvp_arena(5204, "pinwheel"), _build_pvp_arena(6618, "rooms")]
 pvp_arena = 0
@@ -8404,6 +8406,13 @@ def pvp_spawn_point(name):
     index = players.index(name) if name in players else 0
     return PVP_SPAWNS[index % len(PVP_SPAWNS)]
 
+def pvp_pick_arena(last):
+    """Which arena the next round uses: the one the host chose, or a random one that isn't the last."""
+    if 0 <= pvp_arena_choice < len(PVP_ARENAS):
+        return pvp_arena_choice
+    choices = [i for i in range(len(PVP_ARENAS)) if i != last] or list(range(len(PVP_ARENAS)))
+    return random.choice(choices)
+
 def pvp_set_barrier(fraction):
     """How much of the map is inside the barrier right now (1 = all of it)."""
     global pvp_barrier, storm_survival_map_width, storm_survival_map_height
@@ -8434,7 +8443,7 @@ def pvp_start_game():
     coins.clear()
     bullets.clear()
     pvp_state = {"round": 1, "phase": "fight", "time_left": pvp_minutes * 60.0, "wins": {}, "winner": None,
-                 "timer": 0.0, "fight_time": 0.0, "arena": random.randrange(len(PVP_ARENAS))}
+                 "timer": 0.0, "fight_time": 0.0, "arena": pvp_pick_arena(None)}
     use_pvp_arena(pvp_state["arena"])
     pvp_set_barrier(1.0)
     select_ability_slot(selected_ability_slot)  # No abilities if the host turned upgrades off
@@ -8462,8 +8471,8 @@ def update_pvp(dt):
         return
     state = dict(pvp_state)
     state["wins"] = dict(pvp_state["wins"])
-    if state["phase"] != "game_over":
-        state["time_left"] = max(0.0, state["time_left"] - dt)
+    if state["phase"] != "game_over" and not pvp_first_to():
+        state["time_left"] = max(0.0, state["time_left"] - dt)   # First to #: no clock, it runs until someone wins
     if state["phase"] == "fight":
         state["fight_time"] += dt
         names, alive = pvp_alive_players()
@@ -8476,7 +8485,7 @@ def update_pvp(dt):
             pvp_set_barrier(1.0 - closed * (1.0 - PVP_BARRIER_SMALLEST))
         else:
             pvp_set_barrier(1.0)
-        if state["time_left"] <= 0:  # Out of time: whoever won the most rounds takes it
+        if state["time_left"] <= 0 and not pvp_first_to():  # Out of time: whoever won the most rounds takes it
             state.update(phase="game_over", winner=pvp_leader(state["wins"]), timer=PVP_GAME_END_WAIT)
         elif len(names) >= 2 and state["fight_time"] >= PVP_ROUND_START_GRACE and len(alive) <= 1:
             winner = alive[0] if alive else None
@@ -8493,12 +8502,11 @@ def update_pvp(dt):
             if state["phase"] == "game_over":
                 net.end_match()  # Back to the lobby
                 state["timer"] = 99.0
-            elif state["time_left"] <= 0:
+            elif state["time_left"] <= 0 and not pvp_first_to():
                 state.update(phase="game_over", winner=pvp_leader(state["wins"]), timer=PVP_GAME_END_WAIT)
-            else:  # A new round: a different one of the three arenas
-                arenas = [i for i in range(len(PVP_ARENAS)) if i != state.get("arena")]
+            else:  # A new round, in whichever arena comes next
                 state.update(phase="fight", round=state["round"] + 1, winner=None, fight_time=0.0,
-                             arena=random.choice(arenas))
+                             arena=pvp_pick_arena(state.get("arena")))
     changed = (state["phase"], state["round"]) != (pvp_state["phase"], pvp_state["round"])
     pvp_apply_state(state)
     pvp_send_timer -= dt
@@ -8637,10 +8645,12 @@ def pvp_panel_layout():
         "panel": panel,
         "minus": pygame.Rect(x, panel.y + 104, 50, 46),
         "plus": pygame.Rect(x + w - 50, panel.y + 104, 50, 46),
-        "no_upgrades": pygame.Rect(x, panel.y + 176, w, 50),
-        "first_to": pygame.Rect(x, panel.y + 246, w, 50),
-        "barrier": pygame.Rect(x, panel.y + 316, w, 50),
-        "first_to_box": pygame.Rect(x, panel.y + 386, w, 50),
+        "arena_prev": pygame.Rect(x, panel.y + 188, 50, 46),
+        "arena_next": pygame.Rect(x + w - 50, panel.y + 188, 50, 46),
+        "no_upgrades": pygame.Rect(x, panel.y + 252, w, 50),
+        "first_to": pygame.Rect(x, panel.y + 316, w, 50),
+        "barrier": pygame.Rect(x, panel.y + 380, w, 50),
+        "first_to_box": pygame.Rect(x, panel.y + 444, w, 50),
     }
 
 def draw_checkbox_row(rect, text, checked, locked):
@@ -8668,8 +8678,18 @@ def draw_pvp_panel():
         draw_button(layout[key], GREY_BUTTON if locked else BLUE)
         text = button_font.render(sign, True, BLACK)
         screen.blit(text, text.get_rect(center=layout[key].center))
-    minutes = coin_font.render(f"{pvp_minutes} min", True, (255, 222, 95))
+    minutes = coin_font.render("no limit" if pvp_first_to() else f"{pvp_minutes} min", True,
+                               (150, 155, 162) if pvp_first_to() else (255, 222, 95))
     screen.blit(minutes, minutes.get_rect(center=(panel.centerx, layout["minus"].centery)))
+    arena_heading = smaller_button_font.render("Arena", True, (190, 196, 205))
+    screen.blit(arena_heading, arena_heading.get_rect(midtop=(panel.centerx, layout["arena_prev"].y - 26)))
+    for key, sign in (("arena_prev", "<"), ("arena_next", ">")):
+        draw_button(layout[key], GREY_BUTTON if locked else BLUE)
+        text = button_font.render(sign, True, BLACK)
+        screen.blit(text, text.get_rect(center=layout[key].center))
+    arena_name = "Random" if pvp_arena_choice < 0 else PVP_ARENA_NAMES[pvp_arena_choice]
+    label = coin_font.render(arena_name, True, (255, 222, 95))
+    screen.blit(label, label.get_rect(center=(panel.centerx, layout["arena_prev"].centery)))
     draw_checkbox_row(layout["no_upgrades"], "No upgrades/abilities", pvp_no_upgrades, locked)
     draw_checkbox_row(layout["first_to"], "First to #", pvp_first_to_on, locked)
     draw_checkbox_row(layout["barrier"], "Barrier Shrink", pvp_barrier_on, locked)
@@ -8688,7 +8708,7 @@ def draw_pvp_panel():
 
 def handle_pvp_panel_click(pos):
     """True if the click was on the PVP settings panel."""
-    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_focused, pvp_first_to_text, pvp_barrier_on
+    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_focused, pvp_first_to_text, pvp_barrier_on, pvp_arena_choice
     if not show_pvp_panel():
         return False
     layout = pvp_panel_layout()
@@ -8702,6 +8722,10 @@ def handle_pvp_panel_click(pos):
         pvp_minutes = max(1, pvp_minutes - 1)
     elif layout["plus"].collidepoint(pos):
         pvp_minutes = min(30, pvp_minutes + 1)
+    elif layout["arena_prev"].collidepoint(pos):   # Random, then the arenas, wrapping round
+        pvp_arena_choice = (pvp_arena_choice + 1 - 1) % (len(PVP_ARENAS) + 1) - 1
+    elif layout["arena_next"].collidepoint(pos):
+        pvp_arena_choice = (pvp_arena_choice + 1 + 1) % (len(PVP_ARENAS) + 1) - 1
     elif layout["no_upgrades"].collidepoint(pos):
         pvp_no_upgrades = not pvp_no_upgrades
     elif layout["barrier"].collidepoint(pos):
@@ -8730,14 +8754,16 @@ def handle_pvp_panel_key(event):
 
 def pvp_settings_message():
     return {"k": "pvps", "min": pvp_minutes, "nu": pvp_no_upgrades, "ft": pvp_first_to_on, "n": pvp_first_to_text,
-            "bs": pvp_barrier_on}
+            "bs": pvp_barrier_on, "ar": pvp_arena_choice}
 
 def apply_pvp_settings(data):
-    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_text, pvp_barrier_on
+    global pvp_minutes, pvp_no_upgrades, pvp_first_to_on, pvp_first_to_text, pvp_barrier_on, pvp_arena_choice
     pvp_minutes = max(1, min(30, int(data.get("min", pvp_minutes))))
     pvp_no_upgrades = bool(data.get("nu", pvp_no_upgrades))
     pvp_first_to_on = bool(data.get("ft", pvp_first_to_on))
     pvp_barrier_on = bool(data.get("bs", pvp_barrier_on))
+    arena = int(data.get("ar", pvp_arena_choice))
+    pvp_arena_choice = arena if -1 <= arena < len(PVP_ARENAS) else -1
     text = str(data.get("n", pvp_first_to_text))
     pvp_first_to_text = text if text.isdigit() or text == "" else pvp_first_to_text
     if in_pvp and pvp_no_upgrades:
@@ -8755,7 +8781,7 @@ def send_pvp_settings_to_lobby():
 
 def waves_panel():
     left = 24
-    return pygame.Rect(left, HUB_VIEWPORT.y + 20, WIDTH // 2 - 280 - 70 - left, 480)  # Up to the mode buttons
+    return pygame.Rect(left, HUB_VIEWPORT.y + 20, WIDTH // 2 - 280 - 70 - left, 540)  # Up to the mode buttons
 
 def waves_panel_layout():
     panel = waves_panel()
@@ -11318,7 +11344,8 @@ while running:
             draw_storm_timer(max(0, math.ceil(180 - game_timer)))  # Barrier Shrink shows its time in the tab up top
             stats.append(enemy_stat)
         elif in_pvp:
-            draw_storm_timer(max(0, math.ceil(pvp_state["time_left"])))
+            if not pvp_first_to():   # First to #: no clock to show
+                draw_storm_timer(max(0, math.ceil(pvp_state["time_left"])))
             draw_pvp_hud()
         elif in_infinite:
             stats.append(("rising", str(infinite_difficulty()), (255, 165, 130)))
