@@ -1489,7 +1489,21 @@ def world_to_screen(wx, wy, zoom=1.0):
 
 def draw_world_background(zoom=1.0):
     """Endless grass, with the energy-grid barrier drawn over everything outside the playable map.
-    The grass keeps going past the barrier so the world never seems to end - you just can't go there."""
+    The grass keeps going past the barrier so the world never seems to end - you just can't go there.
+    Story mode is indoors, so it gets a dark concrete floor instead."""
+    if in_story:
+        screen.fill((20, 23, 29))
+        step = 120 * zoom
+        origin_x, origin_y = world_to_screen(0, 0, zoom)
+        x = origin_x - math.ceil(origin_x / step) * step
+        while x < WIDTH:
+            pygame.draw.line(screen, (27, 31, 39), (x, 0), (x, HEIGHT))
+            x += step
+        y = origin_y - math.ceil(origin_y / step) * step
+        while y < HEIGHT:
+            pygame.draw.line(screen, (27, 31, 39), (0, y), (WIDTH, y))
+            y += step
+        return
     # Grass tiles, scaled for the zoom and lined up with the world
     ground = MAP_TEXTURES.get(selected_map, grass_texture)  # Grass, Snow or Sand
     step = ground.get_width() * zoom
@@ -2518,6 +2532,11 @@ def draw_minimap():
     play_rect = pygame.Rect(left * scale, top * scale, width * scale, height * scale)
     pygame.draw.rect(surf, MINIMAP_GROUND.get(selected_map, MINIMAP_GROUND["Grass"]), play_rect)
     pygame.draw.rect(surf, (255, 70, 70, 230), play_rect, 2)
+    if in_story:
+        for wall in STORY_WALLS:
+            pygame.draw.rect(surf, (150, 160, 180), (wall.x * scale, wall.y * scale, max(2, wall.width * scale), max(2, wall.height * scale)))
+        for patrol in story_patrols:
+            pygame.draw.circle(surf, (255, 70, 70), (patrol["x"] * scale, patrol["y"] * scale), 4)
     if in_pvp:
         for wall in PVP_WALLS:
             pygame.draw.rect(surf, (160, 170, 185), (wall.x * scale, wall.y * scale, max(2, wall.width * scale), max(2, wall.height * scale)))
@@ -3584,7 +3603,7 @@ settings_from_pause = False  # So Back in Settings knows where to return to
 PAUSE_MENU_BUTTONS = ["Resume", "Settings", "Main Menu", "Quit"]
 
 def in_waves_mode():
-    return not (in_shooting_range or in_storm_survival or in_block_defence or in_tutorial or in_infinite)
+    return not (in_shooting_range or in_storm_survival or in_block_defence or in_tutorial or in_infinite or in_story)
 
 def pause_menu_button_names():
     """Save Game shows up in a solo Waves game with checkpoints on."""
@@ -3669,6 +3688,8 @@ def exit_to_main_menu():
         in_storm_survival = False
     if g.get("in_infinite"):
         g["in_infinite"] = False
+    if g.get("in_story"):
+        g["in_story"] = False
     elif in_block_defence:
         in_block_defence = False
         block_defence_coins = 0  # Block Defence coins don't carry over
@@ -7572,6 +7593,7 @@ def draw_shop_card(card, button, tag, icon, name, button_color, label):
 
 # ---- Play tab: pick a mode, then press Play ----
 GAME_MODES = [
+    ("Story", "Chapter 1: wake up in the lab and find out where you are"),
     ("Waves", "Endless waves of enemies, one wave after another"),
     ("Barrier Shrink", "Survive three minutes while the map closes in"),
     ("Block Defence", "Stop the red enemies reaching your block"),
@@ -8209,6 +8231,252 @@ def receive_world_message(name, data):
             if block_defence_points >= cost and block_health < BLOCK_MAX_HEALTH:  # Points are shared
                 block_defence_points -= cost
                 block_health = min(BLOCK_MAX_HEALTH, block_health + health)
+
+# ---- Story mode, chapter 1: the lab ----
+in_story = False
+STORY_WALL = 40               # How thick the lab walls are
+STORY_DOOR = 150              # How wide a doorway is
+STORY_SLEEPERS = 11           # Powered-off cubes in the room you wake up in
+STORY_VIEW_RANGE = 540        # How far a patrol can see...
+STORY_VIEW_ANGLE = math.radians(36)   # ...and how wide its sight cone is (each way from straight ahead)
+STORY_PATROL_SPEED = 2.1      # How fast a patrol walks its route (you walk 5)
+STORY_CHASE_SPEED = 4.2       # ...and how fast it comes after you once it has seen you (still slower than you)
+STORY_TURN_SPEED = math.radians(150)  # How fast it turns to face where it is going
+STORY_LOSE_TIME = 3.0         # Out of sight this long and it goes back to patrolling
+STORY_WALLS = []              # The lab's walls
+STORY_ROOMS = []              # Every room, so things can be put inside them
+story_sleepers = []           # The powered-off cubes you wake up next to
+story_patrols = []            # The red enemies walking their routes
+story_message = ""            # The line of text across the top
+story_message_timer = 0.0
+
+def story_room_grid():
+    """The lab: a 3 x 3 block of rooms with hallways between them. Returns the rooms."""
+    margin, hall = 200, 260
+    room_w = (MAP_WIDTH - margin * 2 - hall * 2) // 3
+    room_h = (MAP_HEIGHT - margin * 2 - hall * 2) // 3
+    rooms = []
+    for row in range(3):
+        for col in range(3):
+            rooms.append(pygame.Rect(margin + col * (room_w + hall), margin + row * (room_h + hall), room_w, room_h))
+    return rooms
+
+def _wall(x, y, w, h):
+    STORY_WALLS.append(pygame.Rect(round(x), round(y), round(w), round(h)))
+
+def _wall_with_door(x1, y1, x2, y2, door_at=0.5):
+    """A straight wall from (x1, y1) to (x2, y2) with a doorway gap in it."""
+    if y1 == y2:
+        length = x2 - x1
+        gap_start = x1 + length * door_at - STORY_DOOR / 2
+        _wall(x1, y1, gap_start - x1, STORY_WALL)
+        _wall(gap_start + STORY_DOOR, y1, x2 - (gap_start + STORY_DOOR), STORY_WALL)
+    else:
+        length = y2 - y1
+        gap_start = y1 + length * door_at - STORY_DOOR / 2
+        _wall(x1, y1, STORY_WALL, gap_start - y1)
+        _wall(x1, gap_start + STORY_DOOR, STORY_WALL, y2 - (gap_start + STORY_DOOR))
+
+def story_build_lab():
+    """Build the lab: nine rooms with doorways, the hallways between them, and the outer shell."""
+    global STORY_ROOMS
+    STORY_WALLS.clear()
+    STORY_ROOMS = story_room_grid()
+    rng = random.Random(1201)
+    edge = 60
+    _wall(edge, edge, MAP_WIDTH - edge * 2, STORY_WALL)                               # Outer shell
+    _wall(edge, MAP_HEIGHT - edge - STORY_WALL, MAP_WIDTH - edge * 2, STORY_WALL)
+    _wall(edge, edge, STORY_WALL, MAP_HEIGHT - edge * 2)
+    _wall(MAP_WIDTH - edge - STORY_WALL, edge, STORY_WALL, MAP_HEIGHT - edge * 2)
+    for i, room in enumerate(STORY_ROOMS):
+        row, col = divmod(i, 3)
+        # Each room's four walls, with a doorway on the sides that face a hallway
+        _wall_with_door(room.x, room.y, room.right, room.y, rng.uniform(0.3, 0.7)) if row > 0 else _wall(room.x, room.y, room.width, STORY_WALL)
+        _wall_with_door(room.x, room.bottom, room.right, room.bottom, rng.uniform(0.3, 0.7)) if row < 2 else _wall(room.x, room.bottom, room.width, STORY_WALL)
+        _wall_with_door(room.x, room.y, room.x, room.bottom, rng.uniform(0.3, 0.7)) if col > 0 else _wall(room.x, room.y, STORY_WALL, room.height)
+        _wall_with_door(room.right, room.y, room.right, room.bottom, rng.uniform(0.3, 0.7)) if col < 2 else _wall(room.right, room.y, STORY_WALL, room.height)
+        for _ in range(rng.randint(1, 3)):  # A few crates and benches inside each room
+            w, h = rng.choice(((140, 50), (50, 140), (90, 90)))
+            x = rng.randint(room.x + 80, max(room.x + 80, room.right - 80 - w))
+            y = rng.randint(room.y + 80, max(room.y + 80, room.bottom - 80 - h))
+            _wall(x, y, w, h)
+
+def story_point_in_wall(x, y):
+    return any(wall.collidepoint(x, y) for wall in STORY_WALLS)
+
+def story_slide_past_walls(old_x, old_y, new_x, new_y):
+    """Slide along the lab walls instead of sticking to them."""
+    x, y = new_x, old_y
+    if pygame.Rect(x, y, player_size, player_size).collidelist(STORY_WALLS) != -1:
+        x = old_x
+    y = new_y
+    if pygame.Rect(x, y, player_size, player_size).collidelist(STORY_WALLS) != -1:
+        y = old_y
+    return x, y
+
+def story_clear_spot(room, rng, inset=110):
+    """A spot inside a room that isn't inside a wall."""
+    for _ in range(80):
+        x = rng.randint(room.x + inset, room.right - inset)
+        y = rng.randint(room.y + inset, room.bottom - inset)
+        if pygame.Rect(x - 30, y - 30, 60, 60).collidelist(STORY_WALLS) == -1:
+            return x, y
+    return room.center
+
+def story_start_chapter():
+    """Wake up in the middle room, surrounded by cubes like you that never switched on."""
+    global story_sleepers, story_patrols, story_message, story_message_timer, player_x, player_y
+    rng = random.Random(77)
+    start = STORY_ROOMS[4]   # The middle of the nine
+    player_x, player_y = start.centerx - player_size / 2, start.centery + 60
+    story_sleepers = []
+    others = [s for s in shop_skins if s != "white"]
+    for i in range(STORY_SLEEPERS):
+        angle = i * 2 * math.pi / STORY_SLEEPERS
+        radius = rng.uniform(150, min(start.width, start.height) / 2 - 90)
+        x, y = start.centerx + math.cos(angle) * radius, start.centery + math.sin(angle) * radius
+        if pygame.Rect(x - 25, y - 25, 50, 50).collidelist(STORY_WALLS) != -1:
+            continue
+        story_sleepers.append({"x": x - player_size / 2, "y": y - player_size / 2,
+                               "skin": rng.choice(others), "angle": rng.uniform(0, 2 * math.pi)})
+    # Patrols walk a loop around the rooms away from where you wake up
+    story_patrols = []
+    for room_index in (0, 2, 6, 8, 1, 7):
+        room = STORY_ROOMS[room_index]
+        route = [story_clear_spot(room, rng) for _ in range(3)]
+        story_patrols.append({"x": float(route[0][0]), "y": float(route[0][1]), "angle": rng.uniform(0, 2 * math.pi),
+                              "route": route, "leg": 1, "state": "patrol", "lost": 0.0})
+    story_message, story_message_timer = "Where am I? Find a way out.", 7.0
+
+def story_can_see_player(patrol):
+    """True if you are inside this patrol's sight cone, close enough, and not behind a wall."""
+    if player_safe() or game_over:
+        return False
+    px, py = player_x + player_size / 2, player_y + player_size / 2
+    dx, dy = px - patrol["x"], py - patrol["y"]
+    gap = math.hypot(dx, dy)
+    if gap > STORY_VIEW_RANGE:
+        return False
+    off = abs((math.atan2(dy, dx) - patrol["angle"] + math.pi) % (2 * math.pi) - math.pi)
+    if off > STORY_VIEW_ANGLE:
+        return False
+    steps = int(gap // 26) + 1          # Walls block the view
+    for step in range(1, steps):
+        along = step / steps
+        if story_point_in_wall(patrol["x"] + dx * along, patrol["y"] + dy * along):
+            return False
+    return True
+
+def story_walk_toward(patrol, target, speed):
+    """Walk toward a spot, sliding along walls, and turn to face the way it is going."""
+    dx, dy = target[0] - patrol["x"], target[1] - patrol["y"]
+    gap = math.hypot(dx, dy)
+    if gap > 1:
+        want = math.atan2(dy, dx)
+        patrol["angle"] = turn_toward(patrol["angle"], want, STORY_TURN_SPEED * (1 / 60.0) * 4)
+        step = min(speed, gap)
+        for axis in (0, 1):
+            nx = patrol["x"] + (dx / gap * step if axis == 0 else 0)
+            ny = patrol["y"] + (dy / gap * step if axis == 1 else 0)
+            if pygame.Rect(nx - 25, ny - 25, 50, 50).collidelist(STORY_WALLS) == -1:
+                patrol["x"], patrol["y"] = nx, ny
+    return gap <= 30
+
+def update_story(dt):
+    """The patrols: walk the route, chase you while they can see you, and give up after 3 seconds."""
+    global story_message_timer
+    story_message_timer = max(0.0, story_message_timer - dt)
+    px, py = player_x + player_size / 2, player_y + player_size / 2
+    for patrol in story_patrols:
+        if story_can_see_player(patrol):
+            if patrol["state"] != "chase":
+                sounds.play("violet_grab", 0.5)   # A little noise when one spots you
+            patrol["state"], patrol["lost"] = "chase", 0.0
+        elif patrol["state"] == "chase":
+            patrol["lost"] += dt
+            if patrol["lost"] >= STORY_LOSE_TIME:
+                patrol["state"] = "patrol"       # Lost you: back to the route
+        if patrol["state"] == "chase":
+            story_walk_toward(patrol, (px, py), STORY_CHASE_SPEED)
+            if math.hypot(px - patrol["x"], py - patrol["y"]) < player_size and not player_safe() and not game_over:
+                player_hit()
+        else:
+            if story_walk_toward(patrol, patrol["route"][patrol["leg"]], STORY_PATROL_SPEED):
+                patrol["leg"] = (patrol["leg"] + 1) % len(patrol["route"])
+
+def draw_story_lab():
+    """The lab floor markings and walls."""
+    view = pygame.Rect(camera_x - 80, camera_y - 80, WIDTH + 160, HEIGHT + 160)
+    for room in STORY_ROOMS:
+        if not view.colliderect(room):
+            continue
+        r = room.move(-camera_x, -camera_y)
+        floor = pygame.Surface(r.size, pygame.SRCALPHA)
+        floor.fill((38, 44, 56, 180))
+        for x in range(0, r.width, 90):   # Floor tiles
+            pygame.draw.line(floor, (52, 60, 74, 160), (x, 0), (x, r.height))
+        for y in range(0, r.height, 90):
+            pygame.draw.line(floor, (52, 60, 74, 160), (0, y), (r.width, y))
+        screen.blit(floor, r.topleft)
+        pygame.draw.rect(screen, (70, 80, 98), r, 2)
+    for wall in STORY_WALLS:
+        if not view.colliderect(wall):
+            continue
+        r = wall.move(-camera_x, -camera_y)
+        pygame.draw.rect(screen, (24, 28, 36), r.move(3, 4), border_radius=4)
+        pygame.draw.rect(screen, (96, 104, 122), r, border_radius=4)
+        pygame.draw.rect(screen, (140, 150, 170), r, 2, border_radius=4)
+
+def draw_story_sleepers():
+    """The other cubes: standing there, powered off, in their own skins."""
+    for cube in story_sleepers:
+        sx, sy = cube["x"] - camera_x, cube["y"] - camera_y
+        if not on_screen(sx + player_size / 2, sy + player_size / 2, 90):
+            continue
+        face = skin_face(cube["skin"], 0.0)
+        draw_player_cube(sx, sy, face, (40, 44, 54), cube["angle"])
+        dim = pygame.Surface((player_size + 18, player_size + 18), pygame.SRCALPHA)
+        dim.fill((6, 8, 14, 120))        # Powered off: dark and dull
+        screen.blit(dim, (sx - 9, sy - 9))
+
+def draw_story_patrols():
+    """The red patrols and their sight cones."""
+    layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    for patrol in story_patrols:
+        sx, sy = patrol["x"] - camera_x, patrol["y"] - camera_y
+        if not on_screen(sx, sy, STORY_VIEW_RANGE):
+            continue
+        chasing = patrol["state"] == "chase"
+        points = [(sx, sy)]
+        steps = 14
+        for i in range(steps + 1):
+            a = patrol["angle"] - STORY_VIEW_ANGLE + 2 * STORY_VIEW_ANGLE * i / steps
+            reach = STORY_VIEW_RANGE
+            for step in range(1, int(STORY_VIEW_RANGE // 26)):   # The cone stops at walls
+                along = step * 26
+                if story_point_in_wall(patrol["x"] + math.cos(a) * along, patrol["y"] + math.sin(a) * along):
+                    reach = along
+                    break
+            points.append((sx + math.cos(a) * reach, sy + math.sin(a) * reach))
+        pygame.draw.polygon(layer, (255, 60, 60, 70 if chasing else 45), points)
+        pygame.draw.lines(layer, (255, 90, 90, 150 if chasing else 90), False, points[1:], 2)
+    screen.blit(layer, (0, 0))
+    for patrol in story_patrols:
+        sx, sy = patrol["x"] - camera_x, patrol["y"] - camera_y
+        if not on_screen(sx, sy, 80):
+            continue
+        draw_shadow(enemy_shadow, sx, sy)
+        draw_orb(red_orb, None, sx, sy)
+        look = (sx + math.cos(patrol["angle"]) * 40, sy + math.sin(patrol["angle"]) * 40)
+        draw_eye(sx, sy, look[0], look[1], 8, player_size * 0.22)
+        if patrol["state"] == "chase":   # A "!" over its head while it is after you
+            mark = coin_font.render("!", True, (255, 90, 90))
+            screen.blit(mark, mark.get_rect(center=(sx, sy - 44)))
+
+def draw_story_hud():
+    if story_message_timer > 0 and story_message:
+        text = get_bubble_text(story_message, 44, (235, 240, 250), (90, 120, 180), outline=6)
+        screen.blit(text, text.get_rect(midtop=(WIDTH // 2, 100)))
 
 # ---- PVP: last player alive wins the round ----
 PVP_ROUND_WIN_COINS = 5
@@ -9066,7 +9334,10 @@ def start_selected_mode():
     global hub_open, start_screen, sandbox_snapshot
     hub_open = False
     start_screen = False
-    if selected_mode == "Barrier Shrink":
+    if selected_mode == "Story":
+        reset_game(story=True)
+        story_start_chapter()
+    elif selected_mode == "Barrier Shrink":
         reset_game(storm_survival=True)
     elif selected_mode == "Block Defence":
         if hasattr(reset_game, "block_health_initialized"):
@@ -9844,7 +10115,7 @@ def rainbow_color_cycle(elapsed_time, cycle_duration=2.0):
     c2 = rainbow_colors[(i + 1) % len(rainbow_colors)]
     return lerp_color(c1, c2, frac)
 
-def reset_game(shooting_range=False, storm_survival=False, block_defence=False, tutorial=False, infinite=False):
+def reset_game(shooting_range=False, storm_survival=False, block_defence=False, tutorial=False, infinite=False, story=False):
     global player_x, player_y, angle, last_rot_angle, bullets, game_over, coins, player_color, mini_color
     global red_enemies, green_enemies, blue_enemies, kills, wave, max_red_enemies, max_green_enemies, max_blue_enemies, coin_count, in_shooting_range, in_storm_survival, in_block_defence, blue_last_shot_times, teleport_cooldown
     global freeze_active, freeze_cooldown, freeze_timer, wave_completion_message, wave_completion_timer, last_wave, game_paused, pause_countdown, purple_enemies, max_purple_enemies, purple_mini_circles
@@ -9856,6 +10127,7 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
     in_tutorial = tutorial
     globals()["in_pvp"] = False
     globals()["in_infinite"] = infinite
+    globals()["in_story"] = story
     tutorial_step = 0
     tutorial_state = {}
     wave_spawning = False
@@ -9897,6 +10169,8 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
         globals()['block_defence_points'] = 0
     if infinite:
         infinite_next.clear()
+    if story:
+        story_build_lab()
     # Initialize storm survival map size (the Sandbox keeps its own barrier size setting)
     if shooting_range:
         apply_sandbox_barrier()
@@ -9917,14 +10191,14 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
         player_color = skin_colors.get(current_skin, WHITE)
         mini_color = player_color
     kills = 0
-    if shooting_range or storm_survival or block_defence or tutorial or infinite:
+    if shooting_range or storm_survival or block_defence or tutorial or infinite or story:
         red_enemies = []
         green_enemies = []
         blue_enemies = []
         purple_enemies = []
         purple_mini_circles = []
         blue_last_shot_times = []
-        wave = 0 if infinite else 1
+        wave = 0 if (infinite or story) else 1
         max_red_enemies = 0
         max_green_enemies = 0
         max_blue_enemies = 0
@@ -10056,6 +10330,10 @@ while running:
         draw_world_background(game_over_zoom() if game_over else 1.0)
         if in_pvp and not game_over:
             draw_pvp_arena()
+        if in_story and not game_over:
+            draw_story_lab()
+            draw_story_sleepers()
+            draw_story_patrols()
 
     for event in events:
         if event.type == pygame.QUIT:
@@ -10231,7 +10509,7 @@ while running:
 
                 if event.button == 1:  # Only left mouse button
                     # Don't shoot in editor mode (or while frozen solid in PVP)
-                    if not (in_shooting_range and shooting_range_editor_mode) and not pvp_frozen_left():
+                    if not (in_shooting_range and shooting_range_editor_mode) and not pvp_frozen_left() and not in_story:
                         current_time = pygame.time.get_ticks() / 1000
                         if current_time - last_shot_time >= (GUN_SHOT_DELAYS[0] if pvp_no_upgrades_active() else shot_delay) * (2 if active_gun_addon() in HALF_RATE_ADDONS else 1):
                             bullet_speed = 10
@@ -10426,6 +10704,8 @@ while running:
                 if keys[pygame.K_d]: player_x += player_speed
                 if in_pvp:
                     player_x, player_y = pvp_slide_past_walls(before_x, before_y, player_x, player_y)
+                elif in_story:
+                    player_x, player_y = story_slide_past_walls(before_x, before_y, player_x, player_y)
 
         # Update camera to follow player for unlimited map (only in play mode)
         if spectating:
@@ -10479,7 +10759,9 @@ while running:
         global wave_spawning
         if in_infinite:
             update_infinite_spawning(dt)
-        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and not in_pvp and not in_infinite and net_role() != "guest":
+        if in_story:
+            update_story(dt)
+        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and not in_pvp and not in_infinite and not in_story and net_role() != "guest":
             # Only trigger wave spawn if all enemy lists are empty and not already spawning
             if (not wave_spawning and
                 len(red_enemies) == 0 and len(green_enemies) == 0 and len(blue_enemies) == 0 and
@@ -11300,7 +11582,7 @@ while running:
 
         # Draw the orbiting mini gun: a barrel pointing where you aim, under a round gun body
         # (skipped on the frame the player dies, so it isn't frozen into the death snapshot)
-        if not game_over and not spectating:
+        if not game_over and not spectating and not in_story:   # Chapter 1: you don't have a gun yet
             draw_gun(player_x + player_size / 2, player_y + player_size / 2, last_rot_angle, current_skin,
                      pygame.time.get_ticks() / 1000 - last_shot_time)
 
@@ -11347,6 +11629,8 @@ while running:
             if not pvp_first_to():   # First to #: no clock to show
                 draw_storm_timer(max(0, math.ceil(pvp_state["time_left"])))
             draw_pvp_hud()
+        elif in_story:
+            stats.append(("time", f"{int(game_timer // 60):02d}:{int(game_timer % 60):02d}", WHITE))
         elif in_infinite:
             stats.append(("rising", str(infinite_difficulty()), (255, 165, 130)))
             stats.append(("time", f"{int(game_timer // 60):02d}:{int(game_timer % 60):02d}", WHITE))
@@ -11358,6 +11642,8 @@ while running:
             if not in_shooting_range and not in_tutorial:
                 stats.append(enemy_stat)
         draw_stats_bar(stats)
+        if in_story:
+            draw_story_hud()
         draw_ability_slots_hud()
         draw_boss_health()
         draw_spectator_hud()
