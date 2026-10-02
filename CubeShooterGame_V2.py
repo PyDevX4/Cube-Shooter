@@ -1594,8 +1594,25 @@ def create_enemy_icon(size=26):
     pygame.draw.line(surf, (255, 120, 110), (visor.x + 3, visor.centery), (visor.right - 4, visor.centery), 1)
     return surf
 
+def create_wave_icon(size=26):
+    """Three chevrons pointing up, for the wave counter."""
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    for i, color in enumerate(((120, 200, 255), (175, 225, 255), (235, 245, 255))):
+        y = size - 4 - i * 7
+        pygame.draw.lines(surf, color, False, [(3, y), (size / 2, y - 7), (size - 3, y)], 3)
+    return surf
+
+def create_rising_icon(size=26):
+    """A climbing arrow, for how hard Infinite has got."""
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    pygame.draw.lines(surf, (255, 150, 120), False, [(3, size - 4), (size * 0.38, size * 0.55),
+                                                     (size * 0.62, size * 0.72), (size - 4, 4)], 3)
+    pygame.draw.polygon(surf, (255, 150, 120), [(size - 3, 2), (size - 3, 11), (size - 12, 3)])
+    return surf
+
 STAT_ICONS = {"kills": create_skull_icon(), "coins": create_orb_sprite((255, 205, 40), 10, glow=3),
-              "time": create_clock_icon(), "enemies": create_enemy_icon()}
+              "time": create_clock_icon(), "enemies": create_enemy_icon(),
+              "wave": create_wave_icon(), "rising": create_rising_icon()}
 
 def draw_stats_bar(stats):
     """Kills, coins and time side by side in one rounded bar under the minimap.
@@ -1995,6 +2012,71 @@ EXPLOSION_RADIUS = 85       # Explosive Bullets: the blast grows to this size...
 EXPLOSION_GROW = 0.25       # ...over this long, killing everything it touches
 explosions = []
 in_pvp = False             # Playing the multiplayer PVP mode
+in_infinite = False        # Playing Infinite: no waves, enemies just keep coming
+# Infinite mode: (enemy, how many seconds in it starts showing up, seconds between spawns at the start,
+# the shortest that gap ever gets). Everything speeds up smoothly the longer you survive.
+INFINITE_SPAWNS = [
+    ("red", 0, 3.0, 0.45),
+    ("green", 25, 9.0, 1.1),
+    ("blue", 55, 13.0, 1.8),
+    ("purple", 95, 40.0, 7.0),
+    ("orange", 140, 34.0, 6.0),
+    ("yellow", 190, 38.0, 7.0),
+    ("teal", 250, 30.0, 5.0),
+    ("pink", 310, 26.0, 4.5),
+    ("violet", 370, 34.0, 6.0),
+]
+INFINITE_RAMP = 150.0      # Every this many seconds the spawn gaps roughly halve...
+INFINITE_MAX_ENEMIES = 130  # ...but it never piles up more enemies than this
+infinite_next = {}         # enemy -> when it next turns up
+
+def infinite_difficulty():
+    """How far into the run you are: 1 at the start and climbing (shown on the HUD)."""
+    return 1 + int(game_timer // 30)
+
+def infinite_spawn_gap(start_gap, shortest):
+    """The gap between spawns right now: starts at start_gap and closes in toward shortest."""
+    return max(shortest, start_gap / (1 + game_timer / INFINITE_RAMP))
+
+def update_infinite_spawning(dt):
+    """Enemies turn up at random spots, more and more often, with new kinds joining as time goes on."""
+    if net_role() == "guest":
+        return  # The host spawns them; this game shows what the host sends
+    alive = sum(len(group) for group in (red_enemies, green_enemies, blue_enemies, purple_enemies, orange_enemies,
+                                         yellow_enemies, teal_enemies, pink_enemies, violet_enemies))
+    for kind, from_when, start_gap, shortest in INFINITE_SPAWNS:
+        if game_timer < from_when:
+            continue
+        due = infinite_next.get(kind)
+        if due is None:  # Its first one comes a moment after it unlocks
+            infinite_next[kind] = game_timer + random.uniform(0.2, 1.5)
+            continue
+        if game_timer < due:
+            continue
+        gap = infinite_spawn_gap(start_gap, shortest)
+        infinite_next[kind] = game_timer + gap * random.uniform(0.6, 1.4)
+        if alive >= INFINITE_MAX_ENEMIES:
+            continue
+        alive += 1
+        if kind == "purple":
+            spawn_purple()
+        elif kind == "orange":
+            orange_enemies.append(new_orange_enemy(*get_safe_enemy_spawn()))
+        elif kind == "yellow":
+            yellow_enemies.append(new_yellow_enemy(*get_safe_enemy_spawn()))
+        elif kind == "teal":
+            teal_enemies.append(new_teal_enemy(*get_safe_enemy_spawn()))
+        elif kind == "pink":
+            pink_enemies.append(new_pink_enemy(*get_safe_enemy_spawn()))
+        elif kind == "violet":
+            violet_enemies.append(new_violet_enemy(*get_safe_enemy_spawn()))
+        elif kind == "blue":
+            blue_enemies.append(get_safe_enemy_spawn())
+            blue_last_shot_times.append(pygame.time.get_ticks() / 1000)
+        elif kind == "green":
+            green_enemies.append(get_safe_enemy_spawn())
+        else:
+            red_enemies.append(get_safe_enemy_spawn())
 pvp_no_upgrades = False    # PVP setting: everyone plays with level 1 everything and no abilities
 
 def pvp_no_upgrades_active():
@@ -3486,7 +3568,7 @@ settings_from_pause = False  # So Back in Settings knows where to return to
 PAUSE_MENU_BUTTONS = ["Resume", "Settings", "Main Menu", "Quit"]
 
 def in_waves_mode():
-    return not (in_shooting_range or in_storm_survival or in_block_defence or in_tutorial)
+    return not (in_shooting_range or in_storm_survival or in_block_defence or in_tutorial or in_infinite)
 
 def pause_menu_button_names():
     """Save Game shows up in a solo Waves game with checkpoints on."""
@@ -3569,6 +3651,8 @@ def exit_to_main_menu():
         shot_delay = main_game_shot_delay
     elif in_storm_survival:
         in_storm_survival = False
+    if g.get("in_infinite"):
+        g["in_infinite"] = False
     elif in_block_defence:
         in_block_defence = False
         block_defence_coins = 0  # Block Defence coins don't carry over
@@ -7446,6 +7530,7 @@ GAME_MODES = [
     ("Block Defence", "Stop the red enemies reaching your block"),
     ("Sandbox", "Add enemies and try everything out"),
     ("Tutorial", "Learn the controls step by step"),
+    ("Infinite", "No waves - enemies keep coming, harder and harder"),
     ("PVP", "Last player alive wins - multiplayer only"),
 ]
 MULTIPLAYER_ONLY_MODES = ("PVP",)
@@ -8859,6 +8944,8 @@ def start_selected_mode():
         reset_game(shooting_range=True)
     elif selected_mode == "Tutorial":
         reset_game(tutorial=True)
+    elif selected_mode == "Infinite":
+        reset_game(infinite=True)
     elif selected_mode == "PVP":
         reset_game()
         pvp_start_game()
@@ -9624,7 +9711,7 @@ def rainbow_color_cycle(elapsed_time, cycle_duration=2.0):
     c2 = rainbow_colors[(i + 1) % len(rainbow_colors)]
     return lerp_color(c1, c2, frac)
 
-def reset_game(shooting_range=False, storm_survival=False, block_defence=False, tutorial=False):
+def reset_game(shooting_range=False, storm_survival=False, block_defence=False, tutorial=False, infinite=False):
     global player_x, player_y, angle, last_rot_angle, bullets, game_over, coins, player_color, mini_color
     global red_enemies, green_enemies, blue_enemies, kills, wave, max_red_enemies, max_green_enemies, max_blue_enemies, coin_count, in_shooting_range, in_storm_survival, in_block_defence, blue_last_shot_times, teleport_cooldown
     global freeze_active, freeze_cooldown, freeze_timer, wave_completion_message, wave_completion_timer, last_wave, game_paused, pause_countdown, purple_enemies, max_purple_enemies, purple_mini_circles
@@ -9635,6 +9722,7 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
     globals()["music_run"] += 1
     in_tutorial = tutorial
     globals()["in_pvp"] = False
+    globals()["in_infinite"] = infinite
     tutorial_step = 0
     tutorial_state = {}
     wave_spawning = False
@@ -9674,6 +9762,8 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
         globals()['block_defence_game_over_timer'] = 0.0
         globals()['block_end'] = None
         globals()['block_defence_points'] = 0
+    if infinite:
+        infinite_next.clear()
     # Initialize storm survival map size (the Sandbox keeps its own barrier size setting)
     if shooting_range:
         apply_sandbox_barrier()
@@ -9694,14 +9784,14 @@ def reset_game(shooting_range=False, storm_survival=False, block_defence=False, 
         player_color = skin_colors.get(current_skin, WHITE)
         mini_color = player_color
     kills = 0
-    if shooting_range or storm_survival or block_defence or tutorial:
+    if shooting_range or storm_survival or block_defence or tutorial or infinite:
         red_enemies = []
         green_enemies = []
         blue_enemies = []
         purple_enemies = []
         purple_mini_circles = []
         blue_last_shot_times = []
-        wave = 1
+        wave = 0 if infinite else 1
         max_red_enemies = 0
         max_green_enemies = 0
         max_blue_enemies = 0
@@ -10254,7 +10344,9 @@ while running:
 
         # Wave progression logic (only in main game, not shooting range, storm survival, or block defence)
         global wave_spawning
-        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and not in_pvp and net_role() != "guest":
+        if in_infinite:
+            update_infinite_spawning(dt)
+        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and not in_pvp and not in_infinite and net_role() != "guest":
             # Only trigger wave spawn if all enemy lists are empty and not already spawning
             if (not wave_spawning and
                 len(red_enemies) == 0 and len(green_enemies) == 0 and len(blue_enemies) == 0 and
@@ -11121,20 +11213,22 @@ while running:
         elif in_pvp:
             draw_storm_timer(max(0, math.ceil(pvp_state["time_left"])))
             draw_pvp_hud()
-        else:
+        elif in_infinite:
+            stats.append(("rising", str(infinite_difficulty()), (255, 165, 130)))
             stats.append(("time", f"{int(game_timer // 60):02d}:{int(game_timer % 60):02d}", WHITE))
-            if not in_shooting_range and not in_tutorial:  # Waves
+            stats.append(enemy_stat)
+        else:
+            if not in_shooting_range and not in_tutorial:  # Waves: the wave number lives in the bar now
+                stats.append(("wave", str(wave), (190, 225, 255)))
+            stats.append(("time", f"{int(game_timer // 60):02d}:{int(game_timer % 60):02d}", WHITE))
+            if not in_shooting_range and not in_tutorial:
                 stats.append(enemy_stat)
         draw_stats_bar(stats)
         draw_ability_slots_hud()
         draw_boss_health()
         draw_spectator_hud()
 
-        # Draw wave top left (hide wave in shooting range, storm survival, and block defence)
-        if not in_shooting_range and not in_storm_survival and not in_block_defence and not in_tutorial and not in_pvp:
-            wave_text = coin_font.render(f"Wave {wave}", True, WHITE)
-            blit_hud(wave_text, (20, 20))
-        elif in_storm_survival:
+        if in_storm_survival:
             # Draw win message if player has won
             pass  # The win shows on the wave complete banner
         elif in_block_defence:
