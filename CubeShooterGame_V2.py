@@ -7605,10 +7605,10 @@ GAME_MODES = [
 MULTIPLAYER_ONLY_MODES = ("PVP",)
 selected_mode = "Waves"
 PLAY_CENTER_X = min(WIDTH // 2, WIDTH - 650)  # Leaves room for the lobby panel
-PLAY_BUTTON = pygame.Rect(PLAY_CENTER_X - 160, HUB_VIEWPORT.y + 506, 320, 72)
+PLAY_BUTTON = pygame.Rect(PLAY_CENTER_X - 160, HUB_VIEWPORT.y + 540, 320, 66)
 
 map_menu_open = False
-MAP_SELECT_BUTTON = pygame.Rect(PLAY_CENTER_X - 20, HUB_VIEWPORT.y + 436, 170, 50)  # "Map: Grass [Select]" opens the map menu
+MAP_SELECT_BUTTON = pygame.Rect(PLAY_CENTER_X - 20, HUB_VIEWPORT.y + 470, 170, 50)  # "Map: Grass [Select]" opens the map menu
 MAP_MENU_PANEL = pygame.Rect(WIDTH // 2 - 580, 100, 1160, 720)
 MAP_MENU_CLOSE = pygame.Rect(MAP_MENU_PANEL.right - 70, MAP_MENU_PANEL.y + 18, 50, 50)
 
@@ -7719,7 +7719,7 @@ def handle_map_menu_click(pos):
         return
 
 def mode_row_rects():
-    return [(name, pygame.Rect(PLAY_CENTER_X - 280, HUB_VIEWPORT.y + 14 + i * 54, 560, 48))
+    return [(name, pygame.Rect(PLAY_CENTER_X - 280, HUB_VIEWPORT.y + 10 + i * 48, 560, 42))
             for i, (name, _) in enumerate(GAME_MODES)]
 
 def draw_play_tab():
