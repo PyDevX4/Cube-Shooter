@@ -16,6 +16,15 @@ import cube_online
 import cube_net
 import updater
 import sounds  # Sound effects: files dropped in the "sounds" folder play on their events
+
+_play_sound = sounds.play
+
+def _play_if_on(event, volume=1.0):
+    """Settings -> Sounds: off means the game makes no sound effects."""
+    if sounds_on:
+        _play_sound(event, volume)
+
+sounds.play = _play_if_on
 from version import VERSION
 
 # Auto-update (built .exe only): looks for a newer release in the background and installs it from a menu
@@ -2142,6 +2151,9 @@ def progress_state():
         "ability_slot": selected_ability_slot,
         "gun_addon": gun_addon,
         "theme": theme_personal,
+        "themes_on": themes_on,
+        "sounds_on": sounds_on,
+        "music_on": music_on,
         "best_wave": best_wave,
         "map": selected_map,
         "owned_maps": sorted(owned_maps),
@@ -2171,6 +2183,8 @@ def apply_progress(progress):
     addon = progress.get("gun_addon")
     g["gun_addon"] = addon if any(a["key"] == addon and g[a["flag"]] for a in GUN_ADDONS) else None
     g["theme_personal"] = progress.get("theme") if progress.get("theme") in THEMES else "None"
+    for switch in ("themes_on", "sounds_on", "music_on"):
+        g[switch] = bool(progress.get(switch, True))
     g["theme_refresh_timer"] = 0.0   # Ask the server for everyone's theme again
     g["best_wave"] = int(progress.get("best_wave", 0))
     g["owned_maps"] = set(FREE_MAPS) | {m for m in progress.get("owned_maps", []) if m in MAP_NAMES}
@@ -2886,7 +2900,9 @@ theme_pieces = []
 theme_refresh_timer = 0.0
 
 def active_theme():
-    """Your own theme wins; otherwise the one the owner set for everyone."""
+    """Your own theme wins; otherwise the one the owner set for everyone. Off in Settings means none at all."""
+    if not themes_on:
+        return "None"
     name = theme_personal if theme_personal and theme_personal != "None" else theme_global
     return name if name in THEMES else "None"
 
@@ -7246,8 +7262,14 @@ def draw_sandbox_place():
 settings_open = False
 settings_confirm = None  # None, "data" or "account" while an "are you sure?" box is showing
 SETTINGS_DISPLAY_BUTTON = pygame.Rect(WIDTH // 2 - 150, 250, 300, 60)
-SETTINGS_DELETE_DATA_BUTTON = pygame.Rect(WIDTH // 2 - 150, 430, 300, 60)
-SETTINGS_DELETE_ACCOUNT_BUTTON = pygame.Rect(WIDTH // 2 - 150, 510, 300, 60)
+SETTINGS_THEMES_BUTTON = pygame.Rect(WIDTH // 2 - 310, 368, 200, 54)    # Your own switches
+SETTINGS_SOUNDS_BUTTON = pygame.Rect(WIDTH // 2 - 100, 368, 200, 54)
+SETTINGS_MUSIC_BUTTON = pygame.Rect(WIDTH // 2 + 110, 368, 200, 54)
+themes_on = True          # Your own switches (saved with your account)
+sounds_on = True
+music_on = True
+SETTINGS_DELETE_DATA_BUTTON = pygame.Rect(WIDTH // 2 - 150, 522, 300, 56)
+SETTINGS_DELETE_ACCOUNT_BUTTON = pygame.Rect(WIDTH // 2 - 150, 586, 300, 56)
 CONFIRM_YES_BUTTON = pygame.Rect(WIDTH // 2 - 220, 520, 200, 60)
 CONFIRM_NO_BUTTON = pygame.Rect(WIDTH // 2 + 20, 520, 200, 60)
 
@@ -7269,9 +7291,18 @@ def draw_settings_content():
     screen.blit(display_text, display_text.get_rect(center=SETTINGS_DISPLAY_BUTTON.center))
     display_hint = small_button_font.render("Click to switch (or press F11 any time)", True, (205, 210, 216))
     screen.blit(display_hint, display_hint.get_rect(center=(WIDTH // 2, 330)))
-    draw_panel(pygame.Rect(WIDTH // 2 - 320, 375, 640, 215))
+    draw_panel(pygame.Rect(WIDTH // 2 - 320, 345, 640, 110))
+    for rect, label, on in ((SETTINGS_THEMES_BUTTON, "Themes", themes_on),
+                            (SETTINGS_SOUNDS_BUTTON, "Sounds", sounds_on),
+                            (SETTINGS_MUSIC_BUTTON, "Music", music_on)):
+        draw_button(rect, GREEN if on else (95, 100, 110))
+        text = small_button_font.render(f"{label}: {'ON' if on else 'OFF'}", True, BLACK)
+        screen.blit(text, text.get_rect(center=rect.center))
+    mine = smaller_button_font.render("These three are just for your game", True, (190, 196, 205))
+    screen.blit(mine, mine.get_rect(center=(WIDTH // 2, 434)))
+    draw_panel(pygame.Rect(WIDTH // 2 - 320, 470, 640, 180))
     danger_label = coin_font.render("Danger Zone", True, (255, 130, 130))
-    screen.blit(danger_label, danger_label.get_rect(center=(WIDTH // 2, 405)))
+    screen.blit(danger_label, danger_label.get_rect(center=(WIDTH // 2, 498)))
     for rect, label in ((SETTINGS_DELETE_DATA_BUTTON, "Delete Data"), (SETTINGS_DELETE_ACCOUNT_BUTTON, "Delete Account")):
         draw_button(rect, DARK_RED)
         text = button_font.render(label, True, BLACK)
@@ -7353,6 +7384,12 @@ def handle_settings_content_event(event):
         return
     if SETTINGS_DISPLAY_BUTTON.collidepoint(pos):
         pygame.display.toggle_fullscreen()
+    elif SETTINGS_THEMES_BUTTON.collidepoint(pos):
+        globals()["themes_on"] = not themes_on
+    elif SETTINGS_SOUNDS_BUTTON.collidepoint(pos):
+        globals()["sounds_on"] = not sounds_on
+    elif SETTINGS_MUSIC_BUTTON.collidepoint(pos):
+        globals()["music_on"] = not music_on
     elif SETTINGS_DELETE_DATA_BUTTON.collidepoint(pos):
         settings_confirm = "data"
     elif SETTINGS_DELETE_ACCOUNT_BUTTON.collidepoint(pos):
@@ -7536,10 +7573,10 @@ GAME_MODES = [
 MULTIPLAYER_ONLY_MODES = ("PVP",)
 selected_mode = "Waves"
 PLAY_CENTER_X = min(WIDTH // 2, WIDTH - 650)  # Leaves room for the lobby panel
-PLAY_BUTTON = pygame.Rect(PLAY_CENTER_X - 160, HUB_VIEWPORT.y + 470, 320, 72)
+PLAY_BUTTON = pygame.Rect(PLAY_CENTER_X - 160, HUB_VIEWPORT.y + 506, 320, 72)
 
 map_menu_open = False
-MAP_SELECT_BUTTON = pygame.Rect(PLAY_CENTER_X - 20, HUB_VIEWPORT.y + 385, 170, 50)  # "Map: Grass [Select]" opens the map menu
+MAP_SELECT_BUTTON = pygame.Rect(PLAY_CENTER_X - 20, HUB_VIEWPORT.y + 436, 170, 50)  # "Map: Grass [Select]" opens the map menu
 MAP_MENU_PANEL = pygame.Rect(WIDTH // 2 - 580, 100, 1160, 720)
 MAP_MENU_CLOSE = pygame.Rect(MAP_MENU_PANEL.right - 70, MAP_MENU_PANEL.y + 18, 50, 50)
 
@@ -7667,7 +7704,8 @@ def draw_play_tab():
             screen.blit(tick, tick.get_rect(midright=(rect.right - 18, rect.centery)))
     description = next(text for name, text in GAME_MODES if name == selected_mode)
     info = coin_font.render(description, True, (210, 215, 222))
-    screen.blit(info, info.get_rect(center=(PLAY_CENTER_X, HUB_VIEWPORT.y + 350)))
+    rows = mode_row_rects()
+    screen.blit(info, info.get_rect(center=(PLAY_CENTER_X, rows[-1][1].bottom + 34)))
     # Map picker: works for every mode
     map_label = coin_font.render(f"Map: {selected_map}", True, WHITE)
     screen.blit(map_label, map_label.get_rect(midright=(MAP_SELECT_BUTTON.x - 16, MAP_SELECT_BUTTON.centery)))
@@ -8194,18 +8232,36 @@ def pvp_first_to():
         return None
     return int(pvp_first_to_text)
 
-def _build_pvp_arena():
-    """Walls, crate stacks and pillars scattered over the map. The same layout on every computer (fixed seed),
-    with the 4 spawn corners and the middle kept open."""
-    rng = random.Random(4077)
+def _build_pvp_arena(seed=4077, style="corners"):
+    """Walls, crate stacks and pillars scattered over the map. Every computer builds the same three layouts
+    (fixed seeds), with the 4 spawn corners and the middle kept open.
+    style changes the shape of the middle: L-shaped corners, a ring with 4 gaps, or long cross lanes."""
+    rng = random.Random(seed)
     spawns = [(420, 420), (MAP_WIDTH - 420, MAP_HEIGHT - 420), (MAP_WIDTH - 420, 420), (420, MAP_HEIGHT - 420)]
     walls, crates, pillars = [], [], []
     cx, cy = MAP_WIDTH // 2, MAP_HEIGHT // 2
-    # The centre: four L-shaped corners around an open middle
-    for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
-        x, y = cx + sx * 260, cy + sy * 260
-        walls.append(pygame.Rect(min(x, x - sx * 200), y - 20, 200, 40))
-        walls.append(pygame.Rect(x - 20, min(y, y - sy * 200), 40, 200))
+    if style == "corners":      # Four L-shaped corners around an open middle
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            x, y = cx + sx * 260, cy + sy * 260
+            walls.append(pygame.Rect(min(x, x - sx * 200), y - 20, 200, 40))
+            walls.append(pygame.Rect(x - 20, min(y, y - sy * 200), 40, 200))
+    elif style == "ring":       # A broken ring you can duck in and out of
+        for side in range(4):
+            for piece in (-1, 1):
+                if side % 2 == 0:
+                    x = cx + piece * 170
+                    walls.append(pygame.Rect(x - 110, cy - 300 if side == 0 else cy + 260, 220, 40))
+                else:
+                    y = cy + piece * 170
+                    walls.append(pygame.Rect(cx - 300 if side == 1 else cx + 260, y - 110, 40, 220))
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):   # Little blocks inside the ring
+            walls.append(pygame.Rect(cx + sx * 120 - 30, cy + sy * 120 - 30, 60, 60))
+    else:                       # Long lanes crossing the middle, with cover at the ends
+        for lane in (-1, 1):
+            walls.append(pygame.Rect(cx - 420, cy + lane * 150 - 20, 840, 40))
+            walls.append(pygame.Rect(cx + lane * 150 - 20, cy - 420, 40, 840))
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            walls.append(pygame.Rect(cx + sx * 330 - 40, cy + sy * 330 - 40, 80, 80))
     def clear(rect):
         grown = rect.inflate(160, 160)
         if any(grown.collidepoint(px, py) or math.hypot(grown.centerx - px, grown.centery - py) < 260 for px, py in spawns):
@@ -8240,8 +8296,18 @@ def _build_pvp_arena():
             pillars.append(rect)
     return walls, crates, pillars, spawns
 
-PVP_WALL_PIECES, PVP_CRATES, PVP_PILLARS, PVP_SPAWNS = _build_pvp_arena()
+# The three arenas. One of them is picked at random for every round.
+PVP_ARENAS = [_build_pvp_arena(4077, "corners"), _build_pvp_arena(8125, "ring"), _build_pvp_arena(9311, "lanes")]
+pvp_arena = 0
+PVP_WALL_PIECES, PVP_CRATES, PVP_PILLARS, PVP_SPAWNS = PVP_ARENAS[0]
 PVP_WALLS = PVP_WALL_PIECES + PVP_CRATES + PVP_PILLARS   # Everything solid
+
+def use_pvp_arena(index):
+    """Switch to one of the three layouts (everyone in the match uses the same one)."""
+    global pvp_arena, PVP_WALL_PIECES, PVP_CRATES, PVP_PILLARS, PVP_SPAWNS, PVP_WALLS
+    pvp_arena = int(index) % len(PVP_ARENAS)
+    PVP_WALL_PIECES, PVP_CRATES, PVP_PILLARS, PVP_SPAWNS = PVP_ARENAS[pvp_arena]
+    PVP_WALLS = PVP_WALL_PIECES + PVP_CRATES + PVP_PILLARS
 
 def pvp_point_in_wall(x, y):
     return any(wall.collidepoint(x, y) for wall in PVP_WALLS)
@@ -8333,7 +8399,8 @@ def pvp_start_game():
     coins.clear()
     bullets.clear()
     pvp_state = {"round": 1, "phase": "fight", "time_left": pvp_minutes * 60.0, "wins": {}, "winner": None,
-                 "timer": 0.0, "fight_time": 0.0}
+                 "timer": 0.0, "fight_time": 0.0, "arena": random.randrange(len(PVP_ARENAS))}
+    use_pvp_arena(pvp_state["arena"])
     pvp_set_barrier(1.0)
     select_ability_slot(selected_ability_slot)  # No abilities if the host turned upgrades off
     pvp_respawn_me()
@@ -8393,8 +8460,10 @@ def update_pvp(dt):
                 state["timer"] = 99.0
             elif state["time_left"] <= 0:
                 state.update(phase="game_over", winner=pvp_leader(state["wins"]), timer=PVP_GAME_END_WAIT)
-            else:
-                state.update(phase="fight", round=state["round"] + 1, winner=None, fight_time=0.0)
+            else:  # A new round: a different one of the three arenas
+                arenas = [i for i in range(len(PVP_ARENAS)) if i != state.get("arena")]
+                state.update(phase="fight", round=state["round"] + 1, winner=None, fight_time=0.0,
+                             arena=random.choice(arenas))
     changed = (state["phase"], state["round"]) != (pvp_state["phase"], pvp_state["round"])
     pvp_apply_state(state)
     pvp_send_timer -= dt
@@ -8402,7 +8471,7 @@ def update_pvp(dt):
         pvp_send_timer = PVP_SEND_EVERY
         net.relay({"k": "pvp", "s": pvp_settings_message(), "round": state["round"], "phase": state["phase"],
                    "time_left": round(state["time_left"], 2), "wins": state["wins"], "winner": state["winner"],
-                   "timer": round(state["timer"], 2), "bar": round(pvp_barrier, 3)})
+                   "timer": round(state["timer"], 2), "bar": round(pvp_barrier, 3), "arena": state.get("arena", 0)})
 
 def pvp_leader(wins):
     """Whoever won the most rounds, or None on a tie."""
@@ -8431,12 +8500,15 @@ def pvp_apply_state(state):
             main_game_coins = coin_count
             globals().update(console_message=f"+{reward} coins", console_message_timer=2.5)
         sounds.play("boss_wave_complete" if phase == "game_over" else "wave_complete")
+    if state.get("arena") is not None and state["arena"] != pvp_arena:
+        use_pvp_arena(state["arena"])   # Everyone fights in the round's arena
     if round_number != old["round"] and phase == "fight":
         pvp_respawn_me()
     if net_role() != "host":
         pvp_set_barrier(float(state.get("bar", 1.0)))
     pvp_state = {"round": round_number, "phase": phase, "time_left": float(state.get("time_left", 0)),
                  "alive": state.get("alive"), "barrier_time": state.get("barrier_time", 0.0),
+                 "arena": state.get("arena", pvp_arena),
                  "wins": {str(k): int(v) for k, v in dict(state.get("wins", {})).items()}, "winner": state.get("winner"),
                  "timer": float(state.get("timer", 0)), "fight_time": float(state.get("fight_time", old.get("fight_time", 0)))}
 
@@ -11700,7 +11772,7 @@ while running:
         screen.blit(message_surface, message_rect)
 
     # Barrier Shrink song: starts with the round, pauses with the game, stops when it ends
-    sounds.update_music("barrier_shrink" if in_storm_survival and not start_screen and not game_over else None,
+    sounds.update_music("barrier_shrink" if in_storm_survival and not start_screen and not game_over and music_on else None,
                         music_run, paused=game_paused)
     pygame.display.flip()
 
